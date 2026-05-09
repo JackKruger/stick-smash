@@ -28,6 +28,9 @@ export class Tile {
     // anchor by N chain links. When the chain is severed, the tile falls.
     // Spec: { x, y, segs?: number, hp?: number, mass?: number }
     this.chainAnchor = opts.chainAnchor || null;
+    // Optional Z-axis rotation (radians) for tilted decorative shards (e.g., crystal spire).
+    // Applied to both the physics body and mesh before the static-tile matrix bake.
+    this.rotZ = opts.rotZ ?? 0;
     this.body = null;
     this.mesh = null;
     this._chainSuspension = null;  // { anchorBody, segs:[], constraints:[] }
@@ -71,6 +74,7 @@ export class Tile {
       body.addShape(new CANNON.Box(new CANNON.Vec3(w / 2, h / 2, d / 2)));
     }
     body.position.set(x, y, 0);
+    if (this.rotZ) body.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 0, 1), this.rotZ);
     body.userData = { kind: 'tile', tile: this };
     world.add(body);
     this.body = body;
@@ -83,6 +87,7 @@ export class Tile {
     });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(x, y, 0);
+    if (this.rotZ) mesh.rotation.z = this.rotZ;
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     // Static tiles never move — bake the matrix once and skip per-frame
