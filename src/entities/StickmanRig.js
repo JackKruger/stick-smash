@@ -528,12 +528,15 @@ export class StickmanRig {
       // Run arm — bent-elbow pump. Hand traces a forward+up arc on the
       // forward stroke (chin level) and a back+down arc on the back
       // stroke (hand drops past hip behind). Baseline blends to relaxed
-      // hang at standstill so idle isn't a stiff brace.
+      // hang at standstill: at runBlend=0, hand drops directly below
+      // shoulder with no forward push so idle reads as relaxed-at-sides
+      // instead of stiff-braced-forward.
       const armSw = Math.sin(phase + Math.PI) * stepAmp * swingDir;
       const fwdBoost = Math.max(0, armSw);
       const runBlend = clamp(stepAmp * 1.6, 0, 1);
-      const baseUp = lerp(-0.45, -0.18, runBlend);
-      const armForward = 0.06 + armSw * 0.34 + fwdBoost * 0.10;
+      const baseUp = lerp(-0.55, -0.18, runBlend);
+      const idleForward = lerp(0, 0.06, runBlend);
+      const armForward = idleForward + armSw * 0.34 + fwdBoost * 0.10;
       const armUp = baseUp + armSw * 0.08 + fwdBoost * 0.34;
       handRX = sRX + this.facing * armForward;
       handRY = sRY + armUp;
@@ -559,8 +562,9 @@ export class StickmanRig {
       const armSw = Math.sin(phase) * stepAmp * swingDir;
       const fwdBoost = Math.max(0, armSw);
       const runBlend = clamp(stepAmp * 1.6, 0, 1);
-      const baseUp = lerp(-0.45, -0.18, runBlend);
-      const armForward = 0.06 + armSw * 0.34 + fwdBoost * 0.10;
+      const baseUp = lerp(-0.55, -0.18, runBlend);
+      const idleForward = lerp(0, 0.06, runBlend);
+      const armForward = idleForward + armSw * 0.34 + fwdBoost * 0.10;
       const armUp = baseUp + armSw * 0.08 + fwdBoost * 0.34;
       handLX = sLX + this.facing * armForward;
       handLY = sLY + armUp;
