@@ -173,7 +173,7 @@ export class Game {
   _startMatch({ character, name, bots, levelId, isOnline, asClient, localPlayerId }) {
     this._cleanup();
     this.levelId = levelId;
-    this.level = new Level(this.scene, this.physics, this.fx, getLevel(levelId));
+    this.level = new Level(this.scene, this.physics, this.fx, getLevel(levelId), this);
 
     this.players = [];
     this.weapons = [];

@@ -4,6 +4,7 @@ import { COL_GROUPS } from '../physics/PhysicsWorld.js';
 import { audio } from '../audio/Audio.js';
 import { rand } from '../util/math.js';
 import { Planet } from './space/Planet.js';
+import { makePlanetGravity } from './space/PlanetGravity.js';
 
 // Level = grid of destructible tiles + static walls + hazards + spawn points + sky.
 
@@ -523,11 +524,12 @@ export class Hazard {
 }
 
 export class Level {
-  constructor(scene, physics, fx, def) {
+  constructor(scene, physics, fx, def, game = null) {
     this.scene = scene;
     this.physics = physics;
     this.fx = fx;
     this.def = def;
+    this.game = game;
     this.tiles = new Map();
     this.hazards = [];
     this._dynamicTiles = new Set();
@@ -578,6 +580,10 @@ export class Level {
         planet.build(this.scene, this.physics);
         this.planets.push(planet);
       }
+      // Custom multi-planet gravity. World gravity is already 0 (set per
+      // level def). Pre-step accumulates summed pull onto each dynamic body.
+      this._planetGravityFn = makePlanetGravity(this, this.game);
+      this.physics.addPreStep(this._planetGravityFn);
     }
 
     // hazards
@@ -902,6 +908,10 @@ export class Level {
   }
 
   destroy() {
+    if (this._planetGravityFn) {
+      this.physics.removePreStep(this._planetGravityFn);
+      this._planetGravityFn = null;
+    }
     for (const t of this.tiles.values()) t.destroy();
     for (const h of this.hazards) h.destroy();
     // Sweep any chain segs not already released by a hazard or tile destroy
