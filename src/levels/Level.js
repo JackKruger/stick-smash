@@ -3,6 +3,7 @@ import * as CANNON from 'cannon-es';
 import { COL_GROUPS } from '../physics/PhysicsWorld.js';
 import { audio } from '../audio/Audio.js';
 import { rand } from '../util/math.js';
+import { Planet } from './space/Planet.js';
 
 // Level = grid of destructible tiles + static walls + hazards + spawn points + sky.
 
@@ -568,6 +569,15 @@ export class Level {
       tile._key = key;
       this.tiles.set(key, tile);
       tile.build(this.scene, this.physics);
+    }
+
+    // Space-level: build planets from the config.
+    if (this.curvedGravity) {
+      for (const cfg of this.planetConfigs) {
+        const planet = new Planet(this, cfg);
+        planet.build(this.scene, this.physics);
+        this.planets.push(planet);
+      }
     }
 
     // hazards
