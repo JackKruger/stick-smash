@@ -726,6 +726,50 @@ export const LEVELS = [
   },
 
   // ---------------------------------------------------------------------
+  // PLANET TEST — single-planet curved-gravity sandbox (DEV).
+  // Iterate planet physics in isolation. One planet, no meteors, generous
+  // kill bound. Once feel is dialed, scale up to the full 6-planet system.
+  // ---------------------------------------------------------------------
+  {
+    id: 'planettest',
+    name: 'Planet Test',
+    bgColor: 0x000010,
+    gravity: 0,
+    curvedGravity: true,
+    cameraClamp: { x: [-30, 30], y: [-25, 25], zoom: [12, 32] },
+    killBound: { x: 30, y: 25 },
+    planets: [
+      { id: 'p1', cx: 0, cy: 0, radius: 5.0, mantleRadius: 3.3, coreRadius: 1.6, mass: 167 },
+    ],
+    tiles: [],
+    hazards: [],
+    spawns: [
+      { x: 0, y:  6.8 },
+      { x: 0, y: -6.8 },
+      { x:  6.8, y: 0 },
+      { x: -6.8, y: 0 },
+    ],
+    weaponSpawns: [
+      { x: 0, y:  6.8 },
+      { x: 0, y: -6.8 },
+      { x:  6.8, y: 0 },
+      { x: -6.8, y: 0 },
+    ],
+    background: [
+      bgGlow(0, 18, 30, 1.0, 0x4d4080, -16),
+      ...(() => {
+        const stars = [];
+        const seeds = [
+          [-22, 8], [-16, 18], [-10, -16], [-4, 22], [4, -22], [10, 16], [16, -8], [22, 12],
+          [-26, -10], [26, -10], [-20, 22], [20, 22], [0, 24], [0, -24], [-24, 0], [24, 0],
+        ];
+        for (const [x, y] of seeds) stars.push(bgGlow(x, y, 0.18, 0.18, 0xffffff, -17));
+        return stars;
+      })(),
+    ],
+  },
+
+  // ---------------------------------------------------------------------
   // CRATE STACK — warehouse interior. Two stacks + center tower.
   // ---------------------------------------------------------------------
   {
