@@ -1,0 +1,29 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local environment / secrets
+.env
+.env.local
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Claude / superpowers / brainstorm session state
+.superpowers/
+.claude/settings.local.json
+
+# Build / temp
+dist/
+build/
+*.log
+
+# Debug screenshots / scratch
+.dbg-*
+*.dbg.png

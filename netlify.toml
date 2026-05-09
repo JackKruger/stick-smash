@@ -1,0 +1,4 @@
+[build]
+  publish = "."
+
+# Serve all paths from index.html-relative; pure static, no build step.

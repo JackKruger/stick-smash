@@ -1,0 +1,1277 @@
+import * as THREE from 'three';
+import * as CANNON from 'cannon-es';
+import { COL_GROUPS } from '../physics/PhysicsWorld.js';
+import { StickmanRig } from './StickmanRig.js';
+import { clamp, damp, lerp, sign, rand } from '../util/math.js';
+import { audio } from '../audio/Audio.js';
+
+// Stickman = capsule body + procedural rig + state machine.
+// Designed to be controlled either by local input, AI, or network state.
+
+const BODY_RADIUS = 0.32;
+const BODY_HEIGHT = 1.5;
+
+export const STATE = {
+  ACTIVE: 'active',
+  GRABBED: 'grabbed',
+  RAGDOLL: 'ragdoll',
+  DEAD: 'dead',
+};
+
+export class Stickman {
+  constructor(world, scene, opts) {
+    this.world = world;
+    this.scene = scene;
+    this.game = opts.game ?? null;   // for fx/camera/hitStop access
+    this.id = opts.id;
+    this.name = opts.name ?? 'Player';
+    this.character = opts.character;
+    this.team = opts.team ?? 0;
+    this.isLocal = opts.isLocal ?? false;
+    this.isBot = opts.isBot ?? false;
+
+    // Physics: capsule = sphere + cylinder + sphere via two spheres + box (cheap & robust)
+    const body = new CANNON.Body({
+      mass: 70,
+      material: world.materials.player,
+      linearDamping: 0.12,
+      angularDamping: 0.99,
+      fixedRotation: true,
+      allowSleep: false,  // direct velocity writes won't wake a sleeping body
+      collisionFilterGroup: COL_GROUPS.PLAYER,
+      collisionFilterMask: COL_GROUPS.WORLD | COL_GROUPS.PROP | COL_GROUPS.WEAPON | COL_GROUPS.HAZARD | COL_GROUPS.PLAYER | COL_GROUPS.PROJECTILE,
+    });
+    // Pure 2-sphere body (no box). Box edges were catching on tile seams. Spheres
+    // glide smoothly across adjacent tiles.
+    const halfMid = (BODY_HEIGHT - BODY_RADIUS * 2) / 2;
+    body.addShape(new CANNON.Sphere(BODY_RADIUS), new CANNON.Vec3(0, halfMid, 0));
+    body.addShape(new CANNON.Sphere(BODY_RADIUS), new CANNON.Vec3(0, -halfMid, 0));
+
+    const spawnY = this._safeSpawnY(world, opts.spawn?.x ?? 0, opts.spawn?.y ?? 5);
+    body.position.set(opts.spawn?.x ?? 0, spawnY, 0);
+    body.userData = { kind: 'player', stickman: this };
+    world.add(body);
+    this.body = body;
+
+    // Visual rig
+    this.rig = new StickmanRig(opts.character || {});
+    scene.add(this.rig.group);
+
+    // Name tag
+    this.nameSprite = this._makeNameSprite();
+    if (this.nameSprite) scene.add(this.nameSprite);
+
+    // Input snapshot (filled by controller each tick)
+    this.input = {
+      moveX: 0, moveY: 0,
+      jump: false, jumpPressed: false,
+      attack: false, attackPressed: false,
+      grab: false, grabPressed: false,
+      special: false, specialPressed: false,
+      throw: false, throwPressed: false,
+      aimX: 1, aimY: 0,
+      aimActive: false,
+    };
+    this._prev = { jump: false, attack: false, grab: false, special: false, throw: false };
+
+    // State
+    this.state = STATE.ACTIVE;
+    this.health = 100;
+    this.maxHealth = 100;
+    this.armor = 0;
+    this.maxArmor = 60;
+    this.lives = 5;
+    this.score = 0;
+    this.deaths = 0;
+    this.grounded = false;
+    this.prevGrounded = false;
+    this.groundNormalY = 1;
+    this.coyote = 0;
+    this.jumpBuffer = 0;
+    this._jumpLockUntil = 0;
+    this._jumpInputCooldown = 0;
+    this._dustTimer = 0;
+    this.airJumps = 2; // 1 ground + 2 air = up to triple jump per landing
+    this.airJumpsLeft = 2;
+    this.facing = 1;
+    this.aimDir = new THREE.Vector2(1, 0);
+    this.crouching = false;
+    this.sliding = false;
+
+    // Combat
+    this.attackTimer = 0;        // counts down through swing
+    this.attackCooldown = 0;
+    this.attackHits = new Set();  // bodies hit this swing
+    this.hitstun = 0;
+    // Unarmed combo state — 0=jab, 1=cross, 2=kick. Resets after window.
+    this.comboStep = 0;
+    this.comboTimer = 0;
+    this._attackStep = 0;
+    this.kicking = false;
+    this.invuln = 0;
+    this.flashAmount = 0;
+    this.lastDamager = null;
+    this.lastDamageWeapon = null;
+    this.killStreak = 0;
+    this.spawnTime = 0;
+
+    // Grab/throw
+    this.grabbing = null;          // body grabbed by us
+    this.grabConstraint = null;
+    this.grabbedBy = null;          // stickman holding us
+    this.grabReachTimer = 0;        // 0..GRAB_REACH_DUR while reaching for a grab
+    // Throw windup — when grabbing button released with throw intent, queue a
+    // windup. Arm rears back over the shoulder, then release fires the throw.
+    this._throwWindupT = 0;
+    this._throwWindupVx = 0;
+    this._throwWindupVy = 0;
+    this.climbing = null;           // body we cling to
+    this.climbConstraint = null;
+    this.climbCooldown = 0;
+
+    // Weapon
+    this.weapon = null;            // Weapon instance
+    this.weaponMesh = null;
+
+    // Death
+    this.deathTimer = 0;
+    this.respawnAt = 0;
+
+    // Pickups & powers
+    this.speedBoostUntil = 0;
+    this.flightUntil = 0;
+    this.invisibleUntil = 0;
+    this.superPunchUntil = 0;
+    this.timeSlowUntil = 0;
+    this.gumGumUntil = 0;
+    this.forcePushUntil = 0;
+    this.forcePullUntil = 0;
+    this.forceLightningUntil = 0;
+    this.forceChokeUntil = 0;
+    this._forceCooldown = 0;
+    this._burnUntil = 0;
+    this._burnTickAt = 0;
+    this._burnSrc = null;
+    this._frozenUntil = 0;
+
+    // Misc visuals
+    this._handAnchorWorld = new THREE.Vector3();
+  }
+
+  // Cast down from above the requested spawn; return a Y that places the
+  // capsule's bottom comfortably above any tile at that position.
+  _safeSpawnY(world, sx, sy) {
+    const top = sy + 8;
+    const bot = sy - 8;
+    const r = world.raycast({ x: sx, y: top, z: 0 }, { x: sx, y: bot, z: 0 }, { mask: COL_GROUPS.WORLD });
+    if (r && r.hitPointWorld) {
+      const groundY = r.hitPointWorld.y;
+      // Capsule center sits at ground + BODY_HEIGHT/2 + small clearance.
+      return groundY + BODY_HEIGHT / 2 + 0.05;
+    }
+    // No ground found — keep requested y but lift slightly to be safe.
+    return sy + 0.5;
+  }
+
+  _makeNameSprite() {
+    if (this.isBot && !this.name) return null;
+    const cnv = document.createElement('canvas');
+    cnv.width = 256; cnv.height = 64;
+    const ctx = cnv.getContext('2d');
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    const text = this.name.toUpperCase();
+    ctx.font = 'bold 32px system-ui, sans-serif';
+    const w = ctx.measureText(text).width + 24;
+    ctx.fillRect(128 - w / 2, 14, w, 36);
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, 128, 32);
+    const tex = new THREE.CanvasTexture(cnv);
+    tex.minFilter = THREE.LinearFilter;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false });
+    const spr = new THREE.Sprite(mat);
+    spr.scale.set(1.4, 0.35, 1);
+    spr.renderOrder = 999;
+    return spr;
+  }
+
+  get position() { return this.body.position; }
+  get velocity() { return this.body.velocity; }
+  get alive() { return this.state !== STATE.DEAD && this.lives > 0; }
+
+  setWeapon(weapon) {
+    if (this.weapon) {
+      const old = this.weapon;
+      old.detach();
+      old.dropAt(this.position, { x: this.facing * 5, y: 4 });
+    }
+    this.weapon = weapon;
+    if (weapon) {
+      weapon.attachTo(this);
+      audio.pickup();
+      if (this.isLocal && this.game?.hud) {
+        this.game.hud.toast?.(`${weapon.icon || ''} ${weapon.name}`);
+      }
+    }
+  }
+
+  applyKnockback(vx, vy, stun = 0.25) {
+    this.body.wakeUp();
+    this.body.velocity.x = vx;
+    this.body.velocity.y = vy;
+    this.hitstun = Math.max(this.hitstun, stun);
+  }
+
+  takeDamage(amount, opts = {}) {
+    if (this.state === STATE.DEAD) return false;
+    if (this.invuln > 0) return false;
+    // Melee clash — if a punch / melee swing connects while this defender is
+    // also mid-swing of a melee/fist and facing the attacker, both attacks
+    // parry. No damage, both knocked back, both staggered briefly.
+    if (this._tryClashOnIncoming(opts)) return false;
+    // Armor absorbs damage first. When armor breaks, spawn a chunk that falls.
+    if (this.armor > 0 && opts.weapon !== 'lava' && opts.weapon !== 'flame') {
+      const absorbed = Math.min(this.armor, amount);
+      this.armor -= absorbed;
+      amount -= absorbed * 0.7; // armor absorbs 70% of the hit
+      if (this.game?.fx) {
+        this.game.fx.particles.debris(this.position.x, this.position.y + 0.4, 0, 0xa0a8b8, 4);
+      }
+      if (this.armor <= 0) {
+        // Armor broken — bigger pop
+        if (this.game?.fx) this.game.fx.particles.debris(this.position.x, this.position.y + 0.4, 0, 0xa0a8b8, 12);
+        audio.break();
+      }
+    }
+    this.health -= amount;
+    this.flashAmount = Math.min(1, this.flashAmount + Math.min(1, amount / 10));
+    this.lastDamager = opts.attacker ?? null;
+    this.lastDamageWeapon = opts.weapon ?? null;
+    // Skip sound for tiny continuous DoT (lava, burn).
+    const quiet = opts.weapon === 'lava' || opts.weapon === 'flame';
+    if (amount >= 3 && !quiet) audio.hit();
+    if (opts.kb) {
+      this.applyKnockback(opts.kb.x, opts.kb.y, opts.stun ?? 0.25);
+      this.rig.flinch?.(opts.kb.x, clamp(amount / 25, 0.4, 1.5));
+    }
+
+    // Visual feedback: blood, hit-stop, screenshake, briefly tilt body.
+    const game = this.game ?? opts.attacker?.game;
+    if (game?.fx && amount >= 3) {
+      const dirX = opts.kb ? Math.sign(opts.kb.x || 0) || 0 : 0;
+      const dirY = opts.kb ? Math.sign(opts.kb.y || 1) || 1 : 1;
+      game.fx.particles.blood(this.position.x, this.position.y + 0.4, 0, dirX, dirY);
+      // Camera kick scaled by damage; bigger if it's the local player getting hit.
+      const punch = clamp((amount / 30) * (this.isLocal ? 0.6 : 0.25), 0.05, 0.7);
+      game.fx.camera.punch(punch);
+      // Hit-stop on every meaningful hit, stronger on big damage.
+      game.hitStop?.(clamp(amount / 80, 0.02, 0.1));
+      // Local-player red flash overlay
+      if (this.isLocal && game.hud) game.hud.damageFlash?.(amount);
+    }
+
+    if (this.health <= 0) {
+      this.die();
+      return true;
+    }
+    return false;
+  }
+
+  die(reason = 'ko') {
+    if (this.state === STATE.DEAD) return;
+    this.state = STATE.DEAD;
+    this.health = 0;
+    this.deaths++;
+    this.lives--;
+    this.deathTimer = 1.6;
+    this.respawnAt = performance.now() + 1600;
+    audio.death();
+    if (this.lastDamager && this.lastDamager !== this && this.lastDamager.alive) {
+      this.lastDamager.score++;
+      this.lastDamager.killStreak++;
+    }
+    this.body.collisionFilterMask = COL_GROUPS.WORLD; // ragdoll only collides with world
+    this.body.linearDamping = 0.05;
+    this.body.angularDamping = 0.5;
+    this.body.fixedRotation = false;
+    this.body.updateMassProperties();
+    // pop limbs
+    if (this.weapon) {
+      this.weapon.detach();
+      this.weapon.dropAt(this.position, this.body.velocity);
+      this.weapon = null;
+    }
+    if (this.grabbing) this.releaseGrab();
+    if (this.grabbedBy) this.grabbedBy.releaseGrab();
+  }
+
+  // Knock the held weapon out of the hand without ragdolling the player.
+  // Triggered when a projectile hits the weapon while the player isn't
+  // mid-swing (mid-swing projectiles are reflected by Weapon._reflectProjectiles).
+  // `incoming` is the projectile that did the disarm; we use its velocity to
+  // throw the weapon in the same direction so it visually "knocks loose."
+  _disarm(incoming) {
+    if (!this.weapon) return false;
+    const w = this.weapon;
+    const v = incoming?.body?.velocity;
+    const vx = v ? v.x * 0.4 : (this.facing * 4);
+    const vy = v ? Math.max(0, v.y * 0.3) + 4 : 5;
+    w.detach();
+    // Drop slightly above the hand so it tumbles naturally.
+    const hand = this.rig?.handR?.position;
+    const hx = hand?.x ?? (this.position.x + this.facing * 0.4);
+    const hy = hand?.y ?? (this.position.y + 0.6);
+    w.dropAt({ x: hx, y: hy }, { x: vx, y: vy });
+    this.weapon = null;
+    audio.click?.();
+    return true;
+  }
+
+  respawn(spawnPos) {
+    this.state = STATE.ACTIVE;
+    this.health = this.maxHealth;
+    this.invuln = 1.5;
+    // Detach corpse-hit handler if a thrown body is being respawned mid-air.
+    if (this._corpseHitFn) {
+      try { this.body.removeEventListener('collide', this._corpseHitFn); } catch (_) {}
+      this._corpseHitFn = null;
+      this._corpseAttacker = null;
+    }
+    if (this.grabbedBy) this.grabbedBy.releaseGrab();
+    this.rig.resetSprings?.();
+    const safeY = this._safeSpawnY(this.world, spawnPos.x, spawnPos.y);
+    this.body.position.set(spawnPos.x, safeY, 0);
+    this.body.velocity.setZero();
+    this.body.angularVelocity.setZero();
+    this.body.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 0, 1), 0);
+    this.body.collisionFilterMask = COL_GROUPS.WORLD | COL_GROUPS.PROP | COL_GROUPS.WEAPON | COL_GROUPS.HAZARD | COL_GROUPS.PLAYER | COL_GROUPS.PROJECTILE;
+    this.body.fixedRotation = true;
+    this.body.linearDamping = 0.12;
+    this.body.angularDamping = 0.99;
+    this.body.updateMassProperties();
+    this.killStreak = 0;
+    this.spawnTime = performance.now();
+    audio.spawn();
+  }
+
+  releaseGrab(throwVx = 0, throwVy = 0) {
+    if (!this.grabbing) return;
+    if (this.grabConstraint) {
+      this.world.removeConstraint(this.grabConstraint);
+      this.grabConstraint = null;
+    }
+    const target = this.grabbing;
+    this.grabbing = null;
+    if (target.userData?.stickman) {
+      const sm = target.userData.stickman;
+      sm.grabbedBy = null;
+      if (sm.state === STATE.GRABBED) sm.state = STATE.ACTIVE;
+      sm.body.collisionFilterMask = sm.state === STATE.DEAD
+        ? COL_GROUPS.WORLD
+        : (COL_GROUPS.WORLD | COL_GROUPS.PROP | COL_GROUPS.WEAPON | COL_GROUPS.HAZARD | COL_GROUPS.PLAYER | COL_GROUPS.PROJECTILE);
+    }
+    target.collisionResponse = true;
+    target.wakeUp();
+    if (throwVx !== 0 || throwVy !== 0) {
+      target.velocity.x += throwVx;
+      target.velocity.y += throwVy;
+    }
+  }
+
+  releaseClimb() {
+    if (!this.climbing) return;
+    this.climbing = null;
+    this.body.setGravityScale?.(1);
+    this.climbCooldown = 0.2;
+  }
+
+  _updateGroundCheck() {
+    const from = this.body.position;
+    const yTop = from.y - BODY_HEIGHT / 2 - 0.02;
+    const yBot = from.y - BODY_HEIGHT / 2 - 0.40;
+    const mask = COL_GROUPS.WORLD | COL_GROUPS.PROP;
+    // Center ray first — covers ~95% of cases (player standing/walking on a tile
+    // wider than the capsule). Side rays only fire when center misses, e.g. one
+    // foot dangling over a ledge. Cuts raycasts/frame from 3N to ~N typical.
+    let bestHit = this.world.raycast(
+      { x: from.x, y: yTop, z: from.z },
+      { x: from.x, y: yBot, z: from.z },
+      { mask },
+    );
+    if (!bestHit) {
+      const off = BODY_RADIUS * 0.85;
+      const rL = this.world.raycast(
+        { x: from.x - off, y: yTop, z: from.z },
+        { x: from.x - off, y: yBot, z: from.z },
+        { mask },
+      );
+      const rR = this.world.raycast(
+        { x: from.x + off, y: yTop, z: from.z },
+        { x: from.x + off, y: yBot, z: from.z },
+        { mask },
+      );
+      if (rL && (!bestHit || rL.distance < bestHit.distance)) bestHit = rL;
+      if (rR && (!bestHit || rR.distance < bestHit.distance)) bestHit = rR;
+    }
+    // Pure distance-based ground check. Ray length is short (0.4m), so any
+    // hit within 0.2m means we're effectively touching the surface.
+    //
+    // Suppression: ONLY reject grounded while actively rising (vy > ~1.5).
+    // The jump-lock window also applies but only matters during the rise — it
+    // covers the brief frame post-jump where the ray still touches the floor
+    // we just left. Crucially, a landing during a fall (vy <= 0) is ALWAYS
+    // honored, even mid-air-jump cooldown — otherwise air-jumping and
+    // immediately landing on a lower platform leaves the player un-grounded
+    // with no air jumps left = soft-locked.
+    const groundedRaw = !!bestHit && bestHit.distance < 0.2;
+    // Only ignore grounded while genuinely rising AND inside the post-jump
+    // window. As soon as vy goes to zero / negative the body is falling,
+    // so any ray hit IS a real landing — never reject it. This is the
+    // cure for "jumping breaks after landing on a lower platform": the
+    // landing during a fall always counts.
+    const lockActive = performance.now() < (this._jumpLockUntil || 0);
+    const rising = this.body.velocity.y > 0.5;
+    const jumpLocked = lockActive && rising;
+    this.grounded = groundedRaw && !jumpLocked;
+    this.groundNormalY = bestHit ? bestHit.hitNormalWorld.y : 1;
+    // Reset air jumps ONLY on the landing transition (was airborne, now
+    // grounded). Sitting on the ground does not re-arm anything; this avoids
+    // any accidental re-arm during the post-jump frame where the ray might
+    // briefly clip the floor we just left.
+    if (this.grounded && !this.prevGrounded) {
+      this.airJumpsLeft = this.airJumps;
+    }
+    if (this.grounded) {
+      this.coyote = 0.14;
+    } else {
+      this.coyote = Math.max(0, this.coyote - this._dt);
+    }
+  }
+
+  _tryGrab(world, players) {
+    // Grab origin = the right hand's projected world position when in grab pose.
+    // Restricts grabs to actual hand contact (not torso/leg pass-throughs).
+    // Reach is generous (Stick-Fight scale) — players slide into grab range
+    // without needing pixel-perfect spacing.
+    const cx = this.position.x + this.facing * 0.95;
+    const cy = this.position.y + 0.55;
+    const cz = this.position.z;
+    const reach = 0.95;
+
+    // Players first (alive + dead corpses are valid targets).
+    let best = null, bestDist = reach * reach;
+    for (const p of players) {
+      if (!p || p === this) continue;
+      if (p.state === STATE.GRABBED) continue;
+      if (p.grabbing) continue;          // can't grab someone already grabbing another
+      // Skip alive invulnerable players. Dead bodies are always grabbable.
+      if (p.state !== STATE.DEAD && p.invuln > 0) continue;
+      if (p.state !== STATE.DEAD && !p.alive) continue;
+      const dx = p.position.x - cx, dy = p.position.y - cy;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestDist) { best = p; bestDist = d2; }
+    }
+    if (best) {
+      this._grabBody(best.body, best);
+      return true;
+    }
+
+    // Then nearby props/weapons
+    const hits = world.overlapSphere({ x: cx, y: cy, z: cz }, reach, COL_GROUPS.PROP | COL_GROUPS.WEAPON);
+    let prop = null, propD2 = reach * reach;
+    for (const b of hits) {
+      if (b === this.body) continue;
+      if (b.userData?.kind === 'weapon') continue; // weapons are picked up via separate touch logic
+      const dx = b.position.x - cx, dy = b.position.y - cy;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < propD2) { prop = b; propD2 = d2; }
+    }
+    // Dynamic world tiles (crates etc.) — same grab semantics as props.
+    // They live in COL_GROUPS.WORLD because they collide with everything,
+    // but `mass > 0` + `userData.kind === 'tile'` is enough to treat them
+    // as pickup-and-throw objects.
+    const worldHits = world.overlapSphere({ x: cx, y: cy, z: cz }, reach, COL_GROUPS.WORLD);
+    for (const b of worldHits) {
+      if (b === this.body) continue;
+      if (b.mass === 0) continue; // static tile — falls through to climb path
+      if (b.userData?.kind !== 'tile') continue;
+      const dx = b.position.x - cx, dy = b.position.y - cy;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < propD2) { prop = b; propD2 = d2; }
+    }
+    if (prop) { this._grabBody(prop, null); return true; }
+
+    // Climb: world bodies (terrain edges/ledges)
+    const wallHits = world.overlapSphere({ x: cx, y: cy, z: cz }, reach * 0.9, COL_GROUPS.WORLD);
+    for (const b of wallHits) {
+      if (b.mass !== 0) continue; // static only for climbing
+      if (this.climbCooldown > 0) continue;
+      this._climbTo(b);
+      return true;
+    }
+    return false;
+  }
+
+  _grabBody(body, smTarget) {
+    this.grabbing = body;
+    if (smTarget) {
+      const wasDead = smTarget.state === STATE.DEAD;
+      smTarget.grabbedBy = this;
+      if (!wasDead) smTarget.state = STATE.GRABBED;
+      // Pass-through other players while held; dead corpses can hit when thrown.
+      if (wasDead) {
+        smTarget.body.collisionFilterMask = COL_GROUPS.WORLD | COL_GROUPS.PLAYER;
+        smTarget._corpseAttacker = this;
+        smTarget._corpseHitFn = (e) => {
+          const other = e.body;
+          if (!other?.userData) return;
+          if (other === this.body || other === smTarget.body) return;
+          if (other.userData.kind === 'player') {
+            const victim = other.userData.stickman;
+            if (victim && victim.alive && victim.invuln <= 0 && victim !== smTarget._corpseAttacker) {
+              const v = smTarget.body.velocity;
+              const speed = Math.hypot(v.x, v.y);
+              if (speed > 5) {
+                victim.takeDamage(14, {
+                  attacker: smTarget._corpseAttacker, weapon: 'corpse',
+                  kb: { x: v.x * 0.35, y: 5 + Math.abs(v.y) * 0.2 }, stun: 0.3,
+                });
+              }
+            }
+          }
+        };
+        smTarget.body.addEventListener('collide', smTarget._corpseHitFn);
+      } else {
+        smTarget.body.collisionFilterMask &= ~COL_GROUPS.PLAYER;
+      }
+      smTarget.body.wakeUp();
+    }
+    const offset = new CANNON.Vec3(this.facing * 0.7, 0.2, 0);
+    const c = new CANNON.PointToPointConstraint(this.body, offset, body, new CANNON.Vec3(0, 0, 0), 1e6);
+    this.grabConstraint = this.world.addConstraint(c);
+    audio.click();
+  }
+
+  _climbTo(body) {
+    // Stay DYNAMIC so floor/roof collisions still work — gravity countered each tick.
+    this.climbing = body;
+    this.body.velocity.set(0, 0, 0);
+    this.body.angularVelocity.set(0, 0, 0);
+    audio.click();
+  }
+
+  _forcePush() {
+    const radius = 6.5;
+    const game = this.game;
+    if (game?.fx) {
+      game.fx.particles.burst(this.position.x + this.facing * 0.6, this.position.y + 0.4, 0, { count: 36, speed: 14, color: 0x88aaff });
+      game.fx.camera.punch(0.3);
+    }
+    audio.sweep(900, 80, 0.3, 'sawtooth', 0.35);
+    for (const p of game.players) {
+      if (!p || p === this || !p.alive || p.invuln > 0) continue;
+      const dx = p.position.x - this.position.x;
+      const dy = p.position.y - this.position.y;
+      const d = Math.hypot(dx, dy);
+      if (d >= radius) continue;
+      // Only push targets in front (don't blast 360°).
+      if ((dx > 0 ? 1 : -1) !== this.facing) continue;
+      const f = 1 - d / radius;
+      const nx = dx / Math.max(0.1, d), ny = dy / Math.max(0.1, d);
+      p.takeDamage(8 * f, {
+        attacker: this, weapon: 'forcePush',
+        kb: { x: nx * 28 * f, y: ny * 8 * f + 6 }, stun: 0.4 * f,
+      });
+    }
+  }
+  _forcePull() {
+    const radius = 8;
+    const game = this.game;
+    if (game?.fx) game.fx.particles.burst(this.position.x, this.position.y + 0.4, 0, { count: 24, speed: 10, color: 0x4dccff });
+    audio.sweep(120, 1000, 0.3, 'sine', 0.3);
+    for (const p of game.players) {
+      if (!p || p === this || !p.alive || p.invuln > 0) continue;
+      const dx = this.position.x - p.position.x;
+      const dy = (this.position.y + 0.5) - p.position.y;
+      const d = Math.hypot(dx, dy);
+      if (d >= radius) continue;
+      if (d < 1) continue; // already touching
+      const nx = dx / Math.max(0.1, d), ny = dy / Math.max(0.1, d);
+      p.body.velocity.x = nx * 18;
+      p.body.velocity.y = ny * 14 + 4;
+      p.takeDamage(2, { attacker: this, weapon: 'forcePull' });
+    }
+  }
+  _forceLightning() {
+    const game = this.game;
+    const start = { x: this.position.x + this.facing * 0.6, y: this.position.y + 0.55 };
+    let prev = start;
+    const hit = new Set();
+    audio.sweep(2200, 200, 0.18, 'square', 0.3);
+    audio.noise(0.12, 0.25, 6000);
+    for (let i = 0; i < 3; i++) {
+      let best = null, bestD2 = 12 * 12;
+      for (const p of game.players) {
+        if (!p || p === this || !p.alive || p.invuln > 0) continue;
+        if (hit.has(p.id)) continue;
+        const dx = p.position.x - prev.x, dy = p.position.y - prev.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) { bestD2 = d2; best = p; }
+      }
+      if (!best) break;
+      hit.add(best.id);
+      const segs = 10;
+      for (let s = 0; s < segs; s++) {
+        const t = s / (segs - 1);
+        const x = prev.x + (best.position.x - prev.x) * t + (Math.random() - 0.5) * 0.25;
+        const y = prev.y + (best.position.y + 0.45 - prev.y) * t + (Math.random() - 0.5) * 0.25;
+        game.fx.particles.spark.spawn({ x, y, z: 0, vx: 0, vy: 0, life: 0.15, size: 0.13, color: 0xeeccff, gravity: 0, drag: 0.9, shrink: 1 });
+      }
+      best.takeDamage(18 - i * 4, {
+        attacker: this, weapon: 'lightning',
+        kb: { x: (best.position.x - prev.x) * 0.8, y: 3 }, stun: 0.25,
+      });
+      prev = { x: best.position.x, y: best.position.y };
+    }
+    game.fx.camera.punch(0.18);
+  }
+  _forceChoke() {
+    const game = this.game;
+    // Find closest enemy in front of facing.
+    let best = null, bestD2 = 7 * 7;
+    for (const p of game.players) {
+      if (!p || p === this || !p.alive || p.invuln > 0) continue;
+      const dx = p.position.x - this.position.x;
+      const dy = p.position.y - this.position.y;
+      if ((dx > 0 ? 1 : -1) !== this.facing) continue;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestD2) { bestD2 = d2; best = p; }
+    }
+    if (!best) return;
+    audio.sweep(80, 30, 0.6, 'sawtooth', 0.25);
+    // Lift target.
+    best.body.velocity.x = 0;
+    best.body.velocity.y = 12;
+    best.takeDamage(20, {
+      attacker: this, weapon: 'choke',
+      kb: { x: 0, y: 12 }, stun: 0.7,
+    });
+    // Shake them mid-air.
+    const target = best;
+    const tickStart = performance.now();
+    const shakeFn = () => {
+      const elapsed = performance.now() - tickStart;
+      if (elapsed > 700 || !target.alive) return;
+      target.body.velocity.x = (Math.random() - 0.5) * 6;
+      target.body.velocity.y = 6;
+      requestAnimationFrame(shakeFn);
+    };
+    shakeFn();
+    if (game.fx) {
+      game.fx.particles.burst(target.position.x, target.position.y + 0.4, 0, { count: 18, speed: 6, color: 0xff4d6d });
+      game.fx.camera.punch(0.2);
+    }
+  }
+
+  _throwWeapon() {
+    if (!this.weapon) return;
+    const w = this.weapon;
+    w.detach();
+    this.weapon = null;
+    // Throw direction from aim (or facing).
+    const dx = this.input.aimActive ? this.aimDir.x : this.facing;
+    const dy = this.input.aimActive ? this.aimDir.y : 0.2;
+    const speed = 22;
+    w.spawnAt(this.position.x + dx * 0.6, this.position.y + 0.6 + dy * 0.4, 0);
+    if (w.body) {
+      w.body.velocity.set(dx * speed, dy * speed + 4, 0);
+      w.body.angularVelocity.set(0, 0, this.facing * 18);
+      w.dropCooldown = 0.5;     // can't pick back up immediately
+      w._thrownBy = this;
+      // Damage on impact via collide handler.
+      const onHit = (e) => {
+        const other = e.body;
+        if (!other?.userData) return;
+        if (other === this.body) return;
+        if (other.userData.kind === 'player') {
+          const sm = other.userData.stickman;
+          if (sm && sm.alive && sm.invuln <= 0 && sm !== this) {
+            sm.takeDamage(18, {
+              attacker: this, weapon: 'thrown',
+              kb: { x: dx * 14, y: 7 }, stun: 0.3,
+            });
+          }
+        } else if (other.userData.kind === 'tile') {
+          w.game.level.damageTile(other.userData.tile, 8, this);
+        }
+      };
+      w.body.addEventListener('collide', onHit);
+      // Auto-remove handler after a moment so the weapon can be picked up later
+      setTimeout(() => { try { w.body?.removeEventListener('collide', onHit); } catch (_) {} }, 1500);
+    }
+    audio.swing();
+  }
+
+  // Identify melee-class incoming attack vs. ranged/projectile/dot/explosion
+  // and check if defender is currently swinging melee facing the attacker.
+  _tryClashOnIncoming(opts) {
+    const attacker = opts?.attacker;
+    if (!attacker || attacker === this) return false;
+    // Super-punch / nukes / explosions / projectiles / hazards never clash.
+    const meleeWeapons = new Set(['fist','sword','bat','longsword','mace','hammer','halberd','flame','ice','saber']);
+    if (!meleeWeapons.has(opts.weapon)) return false;
+    const defenderSwinging =
+      (this.weapon && this.weapon.swingTimer > 0 && !this.weapon.aimWeapon) ||
+      (!this.weapon && this.attackTimer > 0);
+    if (!defenderSwinging) return false;
+    const dirA = Math.sign(this.position.x - attacker.position.x);
+    if (dirA === 0) return false;
+    if (dirA !== attacker.facing) return false;
+    if (-dirA !== this.facing) return false;
+    attacker._clash(this);
+    return true;
+  }
+
+  // Two attackers parry each other — both bounce away, no damage.
+  // Cancels both attack timers + briefly locks them out (stagger).
+  _clash(other) {
+    if (this._lastClashAt && performance.now() - this._lastClashAt < 200) return;
+    this._lastClashAt = performance.now();
+    other._lastClashAt = this._lastClashAt;
+    const dx = Math.sign(other.position.x - this.position.x) || 1;
+    const punch = 8;
+    this.body.velocity.x = -dx * punch;
+    this.body.velocity.y = 3;
+    other.body.velocity.x = dx * punch;
+    other.body.velocity.y = 3;
+    this.attackTimer = 0;
+    other.attackTimer = 0;
+    if (this.weapon) this.weapon.swingTimer = 0;
+    if (other.weapon) other.weapon.swingTimer = 0;
+    this.attackCooldown = Math.max(this.attackCooldown, 0.25);
+    other.attackCooldown = Math.max(other.attackCooldown, 0.25);
+    this.hitstun = Math.max(this.hitstun, 0.18);
+    other.hitstun = Math.max(other.hitstun, 0.18);
+    audio.swing();
+    audio.beep?.(880, 0.06, 'square', 0.25);
+    audio.beep?.(440, 0.04, 'square', 0.18);
+    if (this.game?.fx) {
+      const mx = (this.position.x + other.position.x) / 2;
+      const my = (this.position.y + other.position.y) / 2 + 0.3;
+      this.game.fx.particles.burst(mx, my, 0, { count: 14, speed: 9, color: 0xffee88 });
+      this.game.fx.particles.burst(mx, my, 0, { count: 8, speed: 6, color: 0xffffff });
+      this.game.fx.camera.punch(0.18);
+      this.game.hitStop?.(0.06);
+    }
+  }
+
+  _doAttack() {
+    if (this.attackCooldown > 0) return;
+    if (this.weapon) {
+      this.weapon.tryFire(this);
+      return;
+    }
+    // Unarmed combo: jab → cross → kick. Within combo window, each press
+    // chains the next move. After the kick (or expiry), combo resets.
+    if (this.comboTimer <= 0) this.comboStep = 0;
+    const step = this.comboStep;
+    this._attackStep = step;
+    this.kicking = (step === 2);
+    const dur = step === 0 ? 0.18 : step === 1 ? 0.22 : 0.30;
+    this.attackTimer = dur;
+    this.attackCooldown = step === 2 ? 0.45 : 0.30;
+    this.attackHits.clear();
+    this.comboStep = (step + 1) % 3;
+    this.comboTimer = step === 2 ? 0 : 0.55;
+    audio.swing();
+  }
+
+  _attackTick(dt, players) {
+    if (this.attackCooldown > 0) this.attackCooldown -= dt;
+    // Tick combo window — once it expires the next press starts a fresh combo.
+    if (this.comboTimer > 0) {
+      this.comboTimer -= dt;
+      if (this.comboTimer <= 0) this.comboStep = 0;
+    }
+    if (this.attackTimer > 0) {
+      this.attackTimer -= dt;
+      if (this.attackTimer <= 0) this.kicking = false;
+      // Weapons handle their own hit detection in worldTick — skip unarmed hit-box.
+      if (this.weapon) return;
+      // Use the duration set by the combo step so phase reads 0..1 correctly.
+      const stepDur = this._attackStep === 0 ? 0.18 : this._attackStep === 1 ? 0.22 : 0.30;
+      const phase = 1 - this.attackTimer / stepDur;
+      if (phase > 0.25 && phase < 0.85) {
+        const tNow = performance.now();
+        const gumGum = tNow < this.gumGumUntil;
+        const isKick = this.kicking;
+        // Kick has bigger reach + lower hit-box (foot height).
+        const reach = gumGum ? 4.8 : (isKick ? 1.25 : 0.95);
+        const radius = gumGum ? 0.8 : (isKick ? 1.1 : 1.0);
+        const cx = this.position.x + this.facing * reach;
+        const cy = this.position.y + (isKick ? -0.20 : 0.15);
+        const superPunch = tNow < this.superPunchUntil;
+        // Combo damage curve: jab(8) → cross(13) → kick(22). Super-punch and
+        // gum-gum override.
+        const comboBase = this._attackStep === 0 ? 8 : this._attackStep === 1 ? 13 : 22;
+        const dmg = superPunch ? 60 : (gumGum ? 22 : comboBase);
+        const comboKb = this._attackStep === 0 ? 9 : this._attackStep === 1 ? 14 : 19;
+        const comboKbY = this._attackStep === 0 ? 4 : this._attackStep === 1 ? 6 : 9;
+        const kbMul = superPunch ? 3.5 : (gumGum ? 1.6 : 1);
+        const kbX = (superPunch || gumGum) ? this.facing * 11 * kbMul : this.facing * comboKb;
+        const kbY = (superPunch || gumGum) ? 5 * kbMul : comboKbY;
+        for (const p of players) {
+          if (!p || p === this || !p.alive || p.invuln > 0) continue;
+          if (this.attackHits.has(p.id)) continue;
+          const dx = p.position.x - cx, dy = p.position.y - cy;
+          if (dx * dx + dy * dy < radius * radius) {
+            p.takeDamage(dmg, {
+              attacker: this, weapon: superPunch ? 'super' : (gumGum ? 'gumgum' : 'fist'),
+              kb: { x: kbX, y: kbY }, stun: superPunch ? 0.5 : (isKick ? 0.35 : 0.2),
+            });
+            this.attackHits.add(p.id);
+            if (superPunch && this.game?.fx) {
+              this.game.fx.particles.burst(p.position.x, p.position.y, 0, { count: 22, speed: 12, color: 0xffcc33 });
+              this.game.fx.camera.punch(0.45);
+              this.game.hitStop?.(0.1);
+            }
+          }
+        }
+        // Punches reflect projectiles (smaller arc).
+        if (this.game?.projectiles) {
+          for (const pr of this.game.projectiles) {
+            if (pr.dead || pr.owner === this) continue;
+            const dx = pr.body.position.x - cx, dy = pr.body.position.y - cy;
+            if (dx * dx + dy * dy < 0.9 * 0.9) {
+              pr.body.velocity.x = -pr.body.velocity.x * 1.2 + this.facing * 4;
+              pr.body.velocity.y = Math.abs(pr.body.velocity.y) * 0.6 + 4;
+              pr.owner = this;
+              this.game.fx.particles.burst(pr.body.position.x, pr.body.position.y, 0, { count: 8, speed: 6, color: 0xffffff });
+              this.game.fx.camera.punch(0.06);
+            }
+          }
+        }
+        // Punches sever physics chains (pendulum links + hanging-platform
+        // suspensions). Per-swing dedupe via attackHits with a chain_<id> key.
+        const chainSegs = this.game?.level?._chainSegs;
+        if (chainSegs?.size) {
+          for (const seg of [...chainSegs]) {
+            if (!seg || seg.dead || !seg.body) continue;
+            const body = seg.body;
+            if (!body.velocity || !body.position) continue;
+            const key = `chain_${body.id}`;
+            if (this.attackHits.has(key)) continue;
+            const dxs = body.position.x - cx;
+            const dys = body.position.y - cy;
+            if (dxs * dxs + dys * dys >= radius * radius) continue;
+            this.attackHits.add(key);
+            body.velocity.x += this.facing * 4;
+            body.velocity.y += 2;
+            seg.damage(dmg * 0.5, this);
+          }
+        }
+      }
+    }
+  }
+
+  _move(dt) {
+    const now = performance.now();
+    const frozen = now < this._frozenUntil;
+    const moveX = frozen ? 0 : this.input.moveX;
+    const boosted = now < this.speedBoostUntil;
+    const flying = now < this.flightUntil;
+    const crouchInput = !flying && this.grounded && this.input.moveY < -0.4;
+
+    // SLIDE — running + press crouch with momentum.
+    const speedAbs = Math.abs(this.body.velocity.x);
+    if (crouchInput && speedAbs > 4 && this.grounded) this.sliding = true;
+    if (this.sliding && (speedAbs < 1.4 || !crouchInput || !this.grounded)) this.sliding = false;
+
+    this.crouching = crouchInput && !this.sliding;
+
+    if (this.sliding) {
+      // Coast on momentum — slow decay, no input acceleration.
+      this.body.velocity.x *= Math.pow(0.55, dt);
+      // Block further accel below by skipping the rest of _move's velocity write.
+      // Variable jump cut + flight branches still run after.
+      // Jumps cancel slide.
+      const tNowSlide = performance.now();
+      const inSlideCD = tNowSlide < (this._jumpInputCooldown || 0);
+      if (this.input.jumpPressed && this.grounded && !inSlideCD) {
+        this.sliding = false;
+        this.body.velocity.y = 9.5;
+        this.coyote = 0;
+        this.grounded = false;
+        this.prevGrounded = false;
+        this._jumpLockUntil = tNowSlide + 120;
+        this._jumpInputCooldown = tNowSlide + 90;
+        audio.jump();
+      }
+      // Skip the standard accel/friction block.
+      if (!this.input.jump && this.body.velocity.y > 4) this.body.velocity.y = 4 + (this.body.velocity.y - 4) * Math.pow(0.05, dt);
+      // Aim/facing still update below.
+      if (this.input.aimActive && !!this.weapon?.aimWeapon) {
+        this.facing = this.input.aimX >= 0 ? 1 : -1;
+      }
+      return;
+    }
+
+    let speedMax = this.crouching ? 2.5 : (boosted ? 9 : (flying ? 7 : 6.5));
+    let accel = this.grounded ? (boosted ? 65 : 45) : (flying ? 36 : 18);
+    // Heavy carry penalty — grabbing a crate (or anything mass > 4) slows
+    // the wielder. Scales gently so a 1×1 crate (~7kg) is a noticeable
+    // drag and the precariously-perched 1.2× heavy crates (~14kg) feel
+    // like real lifting work.
+    const grabbedMass = this.grabbing?.mass ?? 0;
+    if (grabbedMass > 4) {
+      const carryFactor = 10 / (10 + (grabbedMass - 4));
+      speedMax *= carryFactor;
+      accel *= carryFactor;
+    }
+    const targetVx = moveX * speedMax;
+    const dvx = targetVx - this.body.velocity.x;
+    const maxDelta = accel * dt;
+    this.body.velocity.x += clamp(dvx, -maxDelta, maxDelta);
+
+    // Friction when no input
+    if (this.grounded && Math.abs(moveX) < 0.05) {
+      this.body.velocity.x *= Math.pow(0.001, dt); // strong friction
+    }
+
+    // Facing: follows movement direction by default. Aim takes over when the
+    // player is wielding ANY weapon (melee or ranged) so the swing arm and
+    // body face wherever the player is aiming.
+    const aimDriving = this.input.aimActive && !!this.weapon;
+    if (aimDriving) {
+      this.facing = this.input.aimX >= 0 ? 1 : -1;
+    } else if (Math.abs(moveX) > 0.2) {
+      this.facing = sign(moveX);
+    }
+
+    // Jumps — input cooldown prevents spam from double-firing within a frame
+    // and stabilizes the landing-and-immediately-jump-again case.
+    const tNowJump = performance.now();
+    const inJumpCD = tNowJump < (this._jumpInputCooldown || 0);
+    if (this.input.jumpPressed && !inJumpCD) this.jumpBuffer = 0.12;
+    if (this.jumpBuffer > 0 && !inJumpCD && (this.coyote > 0 || this.grounded)) {
+      this.body.velocity.y = 11;
+      this.jumpBuffer = 0;
+      this.coyote = 0;
+      this.grounded = false;
+      this.prevGrounded = false;
+      this._jumpLockUntil = tNowJump + 120;
+      this._jumpInputCooldown = tNowJump + 90;
+      audio.jump();
+    } else if (this.input.jumpPressed && !inJumpCD && this.airJumpsLeft > 0 && !this.grounded) {
+      this.body.velocity.y = 10;
+      this.airJumpsLeft--;
+      this._jumpLockUntil = tNowJump + 100;
+      this._jumpInputCooldown = tNowJump + 90;
+      audio.jump();
+    }
+    if (this.jumpBuffer > 0) this.jumpBuffer -= dt;
+
+    // Variable jump height: cut velocity if jump released early
+    if (!flying && !this.input.jump && this.body.velocity.y > 4) {
+      this.body.velocity.y = 4 + (this.body.velocity.y - 4) * Math.pow(0.05, dt);
+    }
+
+    // FLIGHT — disable gravity for this body and drive vy from input.
+    if (flying) {
+      this.body.setGravityScale?.(0);
+      if (this.input.jump) this.body.velocity.y = clamp(this.body.velocity.y + 30 * dt, -4, 7);
+      else if (this.input.moveY < -0.3) this.body.velocity.y = -4;
+      else this.body.velocity.y = damp(this.body.velocity.y, 0, 0.0001, dt);
+    } else if (this._wasFlying) {
+      this.body.setGravityScale?.(1);
+    }
+    this._wasFlying = flying;
+  }
+
+  _carryGrabbedFollow() {
+    // When holding another stickman, position the constraint anchor in front of us.
+    if (!this.grabConstraint) return;
+    // Throw windup lifts the held body up-and-behind the shoulder so the
+    // physical body matches the rig's rear-back arm pose. Without this the
+    // body floats in front while the rig pulls back — looks disconnected.
+    const w = this._throwWindupT > 0 ? clamp(1 - this._throwWindupT / 0.10, 0, 1) : 0;
+    const px = lerp(this.facing * 0.7, -this.facing * 0.35, w);
+    const py = lerp(0.2, 1.0, w);
+    this.grabConstraint.pivotA.set(px, py, 0);
+    // Force the victim's visual facing to point at the grabber so the
+    // grip reads as "I'm holding you" instead of "we both face the same way."
+    const sm = this.grabbing?.userData?.stickman;
+    if (sm) sm.facing = -this.facing;
+  }
+
+  update(dt, ctx) {
+    this._dt = dt;
+    const { players, level } = ctx;
+
+    if (this.state === STATE.DEAD) {
+      this.deathTimer -= dt;
+      this.body.angularVelocity.z += dt * (Math.random() - 0.5) * 0.5;
+      this.flashAmount = damp(this.flashAmount, 0, 0.001, dt);
+      return;
+    }
+
+    if (this.state === STATE.GRABBED) {
+      // Struggle handled by grabber — body driven by constraint.
+      return;
+    }
+
+    // Fire one-shot edges (suppressed when frozen).
+    const now = this.input;
+    const frozen = performance.now() < this._frozenUntil;
+    now.jumpPressed = !frozen && now.jump && !this._prev.jump;
+    now.attackPressed = !frozen && now.attack && !this._prev.attack;
+    now.grabPressed = !frozen && now.grab && !this._prev.grab;
+    now.specialPressed = !frozen && now.special && !this._prev.special;
+    now.throwPressed = !frozen && now.throw && !this._prev.throw;
+    this._prev.jump = now.jump;
+    this._prev.attack = now.attack;
+    this._prev.grab = now.grab;
+    this._prev.special = now.special;
+    this._prev.throw = now.throw;
+
+    if (this.invuln > 0) this.invuln -= dt;
+    if (this.hitstun > 0) { this.hitstun -= dt; }
+    if (this.climbCooldown > 0) this.climbCooldown -= dt;
+    this.flashAmount = damp(this.flashAmount, 0, 0.001, dt);
+
+    // Burn DoT
+    const tNow = performance.now();
+    if (tNow < this._burnUntil) {
+      if (tNow - this._burnTickAt > 350) {
+        this._burnTickAt = tNow;
+        this.takeDamage(5, { attacker: this._burnSrc, weapon: 'flame' });
+        if (this.game?.fx) this.game.fx.particles.spark.spawn({
+          x: this.position.x + (Math.random() - 0.5) * 0.4,
+          y: this.position.y + Math.random() * 0.6,
+          z: 0, vx: 0, vy: rand(2, 4), life: 0.5, size: 0.18,
+          color: rand() < 0.5 ? 0xff5500 : 0xffaa33, gravity: -2, drag: 0.7, shrink: 1,
+        });
+      }
+    }
+
+    this.prevGrounded = this.grounded;
+    this._updateGroundCheck();
+
+    // Climbing logic — body stays DYNAMIC so floor/ceiling collisions work.
+    if (this.climbing) {
+      if (!this.input.grab) {
+        this.releaseClimb();
+      } else {
+        // Climbing: disable gravity for this body, drive vy from input.
+        this.body.setGravityScale?.(0);
+        this.body.velocity.x = 0;
+        this.body.velocity.y = this.input.moveY * 4;
+        if (this.input.jumpPressed) {
+          this.releaseClimb();
+          this.body.velocity.y = 11;
+          this.body.velocity.x = -this.facing * 6;
+          audio.jump();
+        }
+      }
+    } else if (this.hitstun <= 0) {
+      this._move(dt);
+
+      // Grab vs release. Pressing grab opens a 160ms reach window — the arm
+      // stays extended and we keep checking for targets so a sloppy timing
+      // still connects (Stick-Fight-style "stuffed grab").
+      if (now.grabPressed && !this.grabbing && this._throwWindupT <= 0) {
+        this._tryGrab(this.world, players);
+        if (!this.grabbing) this.grabReachTimer = 0.16;
+      } else if (this.grabReachTimer > 0 && !this.grabbing && this.input.grab) {
+        this._tryGrab(this.world, players);
+        this.grabReachTimer -= dt;
+      } else if (!this.input.grab && this.grabbing && this._throwWindupT <= 0) {
+        // Release. Aim direction takes priority, then movement, else facing.
+        const aimX = this.input.aimActive ? this.aimDir.x : 0;
+        const aimY = this.input.aimActive ? this.aimDir.y : 0;
+        const useAim = (aimX !== 0 || aimY !== 0);
+        const dx = useAim ? aimX : this.input.moveX;
+        const dy = useAim ? aimY : this.input.moveY;
+        const directed = (dx * dx + dy * dy) > 0.05;
+        if (!directed) {
+          // Soft drop — no windup, immediate release.
+          this.releaseGrab(0, 0);
+          audio.click();
+        } else {
+          // Throw — telegraph rear-back arm, then release with force on completion.
+          const power = 16;
+          this._throwWindupVx = (Math.abs(dx) > 0.05 ? dx : this.facing) * power;
+          this._throwWindupVy = (Math.abs(dy) > 0.05 ? dy * power : 0.4 * power) + 5;
+          this._throwWindupT = 0.10;
+        }
+      }
+      if (!this.input.grab) this.grabReachTimer = 0;
+
+      if (this.grabbing) this._carryGrabbedFollow();
+
+      // Attack
+      if (now.attackPressed) this._doAttack();
+
+      // Special / weapon alt fire / force powers.
+      if (now.specialPressed) {
+        const tNow = performance.now();
+        if (this._forceCooldown <= 0) {
+          if (tNow < this.forcePushUntil) { this._forcePush(); this._forceCooldown = 0.7; }
+          else if (tNow < this.forcePullUntil) { this._forcePull(); this._forceCooldown = 0.7; }
+          else if (tNow < this.forceLightningUntil) { this._forceLightning(); this._forceCooldown = 0.4; }
+          else if (tNow < this.forceChokeUntil) { this._forceChoke(); this._forceCooldown = 1.0; }
+          else if (this.weapon?.altFire) this.weapon.altFire(this);
+        } else if (this.weapon?.altFire && performance.now() >= this.forcePushUntil && performance.now() >= this.forcePullUntil) {
+          this.weapon.altFire(this);
+        }
+      }
+      if (this._forceCooldown > 0) this._forceCooldown -= dt;
+
+      // Throw held weapon as a projectile.
+      if (now.throwPressed && this.weapon) this._throwWeapon();
+    }
+    // Throw windup countdown — when 0, fire the queued throw.
+    if (this._throwWindupT > 0) {
+      this._throwWindupT -= dt;
+      if (this._throwWindupT <= 0) {
+        this._throwWindupT = 0;
+        if (this.grabbing) {
+          const target = this.grabbing;
+          const sm = target.userData?.stickman;
+          const tx = this._throwWindupVx, ty = this._throwWindupVy;
+          this.releaseGrab(tx, ty);
+          if (sm) sm.applyKnockback(tx, ty, 0.45);
+          audio.swing();
+        }
+      }
+    }
+    // Attack timing always ticks (so swing finishes even if hit).
+    this._attackTick(dt, players);
+
+    // Aim direction (used by rig & weapons)
+    if (this.input.aimActive) {
+      this.aimDir.set(this.input.aimX, this.input.aimY).normalize();
+    } else {
+      this.aimDir.set(this.facing, 0);
+    }
+
+    // Kill box — instakill when launched outside the play area.
+    if (this.position.y < -16 || this.position.y > 32 || Math.abs(this.position.x) > 30) {
+      this.die('void');
+      // Stop runaway ragdoll so respawn teleport applies cleanly.
+      this.body.velocity.setZero();
+      this.body.angularVelocity.setZero();
+      this.body.position.set(0, 5, 0);
+    }
+  }
+
+  _syncRig(dt, ragdoll) {
+    // Aim pose drives the right arm whenever a weapon is held (so melee arms
+    // also extend toward the aim direction, not just ranged). Falls back to
+    // the original ranged-only behavior when unarmed.
+    const rangedAim = this.weapon?.poseRight === 'aim';
+    const meleeAim = !!this.weapon && this.input.aimActive && !rangedAim;
+    const aimPose = rangedAim || meleeAim;
+    const armPoseR =
+      this.attackTimer > 0 ? 'attack' :
+      aimPose ? 'aim' :
+      this.grabbing ? 'hold' :
+      this.input.grab ? 'grab' : 'walk';
+    // Two-hand grip — left arm also aims while ranged weapon is held.
+    const armPoseL =
+      aimPose ? 'aim' :
+      this.weapon?.poseLeft === 'support' ? 'aim' :
+      this.grabbing ? 'hold' :
+      this.input.grab ? 'grab' : 'walk';
+
+    let holdPos = null;
+    if (this.grabbing) {
+      holdPos = new THREE.Vector3(this.grabbing.position.x, this.grabbing.position.y, this.grabbing.position.z);
+    }
+    const aim = { x: this.aimDir.x, y: this.aimDir.y };
+
+    // Ragdoll factor: dead, grabbed, hitstun
+    let ragAmt = 0;
+    if (this.state === STATE.DEAD) ragAmt = 1;
+    else if (this.state === STATE.GRABBED) ragAmt = 0.7;
+    else if (this.hitstun > 0) ragAmt = clamp(this.hitstun * 1.5, 0, 0.6);
+
+    const gumGum = performance.now() < this.gumGumUntil;
+    // When dead, draw limbs in LOCAL space (origin) — group transform carries world pos+rot.
+    const rigPos = this.state === STATE.DEAD ? { x: 0, y: 0, z: 0 } : this.body.position;
+    const stepDur = this._attackStep === 0 ? 0.18 : this._attackStep === 1 ? 0.22 : 0.30;
+    this.rig.update(rigPos, {
+      // Normalize against current top speed so anim scale stays right.
+      moveX: this.body.velocity.x / 5.5,
+      vy: this.body.velocity.y,
+      grounded: this.grounded,
+      facing: this.facing,
+      attack: this.attackTimer > 0,
+      attackProgress: this.attackTimer > 0 ? 1 - this.attackTimer / stepDur : 0,
+      attackStep: this._attackStep,    // 0=jab, 1=cross, 2=kick
+      kicking: this.kicking,
+      armPoseR, armPoseL, holdPos,
+      aim,
+      crouching: this.crouching,
+      sliding: this.sliding,
+      ragdollAmount: ragAmt,
+      gumGumPunch: gumGum && this.attackTimer > 0 && !this.weapon,
+      // Throw windup ramps 0→1 over the windup window so the rig telegraphs
+      // the throw before release. Drives hold-arm rear-back in the rig.
+      throwWindup: this._throwWindupT > 0 ? clamp(1 - this._throwWindupT / 0.10, 0, 1) : 0,
+      // Angular velocity drives ragdoll limb whip when dead.
+      angVz: this.body.angularVelocity?.z || 0,
+      dt,
+    });
+
+    if (this.state === STATE.DEAD) {
+      // Ragdoll mode: group carries body's full transform. Limbs render in local space.
+      const q = this.body.quaternion;
+      const p = this.body.position;
+      this.rig.group.position.set(p.x, p.y, p.z);
+      this.rig.group.quaternion.set(q.x, q.y, q.z, q.w);
+    } else {
+      this.rig.group.quaternion.identity();
+      this.rig.group.position.set(0, 0, 0);
+    }
+
+    // weapon mesh sync
+    if (this.weapon) this.weapon.updateMesh(this);
+
+    this.rig.setFlash(this.flashAmount);
+    this.rig.setArmor?.(this.armor);
+
+    // Invulnerability flicker / invisibility
+    const tNow = performance.now();
+    const invisible = tNow < this.invisibleUntil;
+    if (invisible) {
+      this.rig.material.transparent = true;
+      this.rig.material.opacity = 0.18;
+      this.rig.group.visible = true;
+    } else if (this.invuln > 0 && this.state !== STATE.DEAD) {
+      this.rig.group.visible = Math.floor(tNow / 80) % 2 === 0;
+      if (this.rig.material.transparent) { this.rig.material.opacity = 1; this.rig.material.transparent = false; }
+    } else {
+      this.rig.group.visible = true;
+      if (this.rig.material.transparent) { this.rig.material.opacity = 1; this.rig.material.transparent = false; }
+    }
+  }
+
+  _updateNameTag() {
+    if (!this.nameSprite) return;
+    this.nameSprite.position.set(this.position.x, this.position.y + 1.5, this.position.z);
+    this.nameSprite.visible = this.state !== STATE.DEAD;
+  }
+
+  destroy() {
+    if (this._corpseHitFn) {
+      try { this.body.removeEventListener('collide', this._corpseHitFn); } catch (_) {}
+      this._corpseHitFn = null;
+    }
+    this.world.remove(this.body);
+    this.scene.remove(this.rig.group);
+    if (this.nameSprite) this.scene.remove(this.nameSprite);
+    if (this.weapon) this.weapon.destroy();
+  }
+}

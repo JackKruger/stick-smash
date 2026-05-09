@@ -1,0 +1,271 @@
+// Drop-in / drop-out networking on top of PeerJS.
+//
+// Design: ONE shared room per URL (default `stick-smash-public`, override
+// with `?room=foo`). Anyone who clicks PLAY ONLINE tries to connect to
+// that peer ID as a CLIENT first. If nobody owns the ID, the connect
+// errors with `peer-unavailable` → the visitor claims the ID themselves
+// and becomes the HOST. First arrival hosts; everyone after joins them.
+//
+// Drop-in: host spawns each new peer into the LIVE match the moment the
+// peer says hello. No lobby, no "press Start", no room codes typed.
+//
+// Drop-out / host migration: if a client loses their conn (host left,
+// flaky network, etc.), they automatically reconnect, which kicks off the
+// same auto-detect flow — somebody will become the new host. Random
+// jitter on retry minimizes simultaneous-claim races.
+import Peer from 'peerjs';
+import { rosterById } from '../characters/roster.js';
+
+export const PUBLIC_ROOM = 'stick-smash-public';
+
+export class Net {
+  constructor(game) {
+    this.game = game;
+    this.peer = null;
+    this.role = null;
+    this.roomId = null;
+    this.connections = new Map(); // peerId -> { conn, name, character, lastInput, playerId }
+    this.peers = [];
+    this.localPlayerId = null;
+    this._connectOpts = null;
+    this._migrating = false;
+    this._intentionalDisconnect = false;
+    this._joinResolveTimer = null;
+  }
+
+  _newPeer(id) {
+    // Multiple STUN endpoints + free TURN relays so symmetric NAT users can
+    // still establish data channels. Without TURN, ~30% of users behind home
+    // routers will silently fail at ICE gathering.
+    const iceServers = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    ];
+    return new Peer(id, {
+      debug: 1,
+      config: { iceServers, iceCandidatePoolSize: 10 },
+    });
+  }
+
+  // ── Public entry point ─────────────────────────────────────────────────
+  // The user clicks PLAY ONLINE → menu gathers (character, name, bots,
+  // levelId), then calls this. We try to JOIN the shared room first; if
+  // the host slot is empty we claim it and host instead.
+  async connect(roomId, opts) {
+    if (this.peer) try { this.peer.destroy(); } catch (_) {}
+    this.role = null;
+    this.roomId = roomId;
+    this._connectOpts = opts;
+    this._intentionalDisconnect = false;
+    this._migrating = false;
+
+    // Anonymous peer first — try connecting AS A CLIENT to the well-known
+    // host ID. If nobody owns that ID (peer-unavailable), promote ourselves.
+    this.peer = this._newPeer();
+    this.peer.on('open', () => this._tryJoin(roomId, opts));
+    this.peer.on('error', (err) => this._onAnonError(err, roomId, opts));
+  }
+
+  _tryJoin(roomId, opts) {
+    const conn = this.peer.connect(roomId, { reliable: true });
+    this.conn = conn;
+    let resolved = false;
+    const fallbackToHost = () => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(this._joinResolveTimer);
+      this._becomeHost(roomId, opts);
+    };
+    conn.on('open', () => {
+      resolved = true;
+      clearTimeout(this._joinResolveTimer);
+      this._asClient(conn, opts);
+    });
+    conn.on('error', () => fallbackToHost());
+    // Some PeerJS errors arrive on the peer (not the conn). Cap the wait so
+    // a silent failure still triggers host promotion.
+    this._joinResolveTimer = setTimeout(fallbackToHost, 6000);
+  }
+
+  _onAnonError(err, roomId, opts) {
+    if (err.type === 'peer-unavailable' || err.type === 'unavailable-id') {
+      // The host slot is empty. Claim it.
+      this._becomeHost(roomId, opts);
+    } else if (err.type === 'browser-incompatible') {
+      alert('This browser does not support WebRTC. Try Chrome / Firefox / Edge.');
+      this.disconnect();
+    } else {
+      console.warn('peer error', err);
+      // Most other errors (network, server-error) — try host fallback as
+      // a last resort. Still useful when the broker is down.
+      this._becomeHost(roomId, opts);
+    }
+  }
+
+  // ── Client path ────────────────────────────────────────────────────────
+  _asClient(conn, opts) {
+    this.role = 'client';
+    this.conn = conn;
+    try { conn.send({ t: 'hello', name: opts.name, character: opts.character }); } catch (_) {}
+    conn.on('data', (data) => this._handleClientMessage(data));
+    conn.on('close', () => this._onClientLost());
+    conn.on('error', (e) => console.warn('conn err', e));
+  }
+
+  _onClientLost() {
+    if (this._intentionalDisconnect) return;
+    if (this._migrating) return;
+    this._migrating = true;
+    // Tear down match — we're either reconnecting or becoming the new host.
+    try { this.game.endMatch(); } catch (_) {}
+    // Random jitter so multiple displaced clients don't all race to claim
+    // the host slot at the same instant.
+    const delay = 500 + Math.random() * 2000;
+    setTimeout(() => {
+      this._migrating = false;
+      this.connect(this.roomId, this._connectOpts);
+    }, delay);
+  }
+
+  _handleClientMessage(data) {
+    if (!data || !data.t) return;
+    if (data.t === 'start') {
+      this.localPlayerId = data.playerId;
+      this.game.startAsClient({ levelId: data.level });
+      if (data.snap) this.game.applySnapshot(data.snap);
+    } else if (data.t === 'snap') {
+      this.game.applySnapshot(data.snap);
+    } else if (data.t === 'event') {
+      this.game.handleNetEvent(data.ev);
+    } else if (data.t === 'pong') {
+      this._lastPing = performance.now() - data.ts;
+    }
+  }
+
+  // ── Host path ──────────────────────────────────────────────────────────
+  _becomeHost(roomId, opts) {
+    if (this.peer) try { this.peer.destroy(); } catch (_) {}
+    this.role = 'host';
+    this.roomId = roomId;
+    this.peer = this._newPeer(roomId);
+    let opened = false;
+    this.peer.on('open', () => {
+      opened = true;
+      // Match starts immediately. No lobby. Late joiners will be spawned
+      // mid-match as they come in.
+      this.game.startHosted({
+        character: opts.character,
+        name: opts.name,
+        bots: opts.bots ?? 2,
+        levelId: opts.levelId ?? 'arena',
+      });
+    });
+    this.peer.on('error', (err) => {
+      if (err.type === 'unavailable-id') {
+        // Race condition: another visitor claimed the host slot between
+        // our peer-unavailable read and our claim. Retry as client.
+        const delay = 400 + Math.random() * 1600;
+        setTimeout(() => this.connect(roomId, opts), delay);
+        return;
+      }
+      if (err.type === 'browser-incompatible') {
+        alert('This browser does not support WebRTC.');
+        return;
+      }
+      // Don't tear the user out of an established match for transient
+      // connection errors — log and keep going.
+      console.warn('peer error (host)', err);
+      if (!opened) {
+        alert('Network error: ' + err.type);
+        this.disconnect();
+        try { this.game.menu.show('main'); } catch (_) {}
+      }
+    });
+    this.peer.on('connection', (conn) => this._onIncoming(conn));
+  }
+
+  _onIncoming(conn) {
+    conn.on('open', () => {
+      const slot = {
+        conn, name: 'P', character: rosterById('bolt'),
+        lastInput: null, playerId: null,
+      };
+      this.connections.set(conn.peer, slot);
+      conn.on('data', (data) => this._handleHostMessage(conn, data));
+      conn.on('close', () => this._dropPeer(conn.peer));
+      conn.on('error', () => this._dropPeer(conn.peer));
+    });
+  }
+
+  _dropPeer(id) {
+    const c = this.connections.get(id);
+    if (c?.playerId != null) this.game.removeNetPlayer(c.playerId);
+    this.connections.delete(id);
+    this._refreshPeers();
+  }
+
+  _refreshPeers() {
+    this.peers = [...this.connections.values()].map(c => ({
+      id: c.conn.peer, name: c.name, character: c.character,
+    }));
+    this.game.menu?.refreshLobby?.();
+  }
+
+  _handleHostMessage(conn, data) {
+    if (!data || !data.t) return;
+    const slot = this.connections.get(conn.peer);
+    if (!slot) return;
+    if (data.t === 'hello') {
+      slot.name = (data.name || 'P').slice(0, 10);
+      slot.character = rosterById(data.character || 'bolt');
+      // Drop-in: the match is already running on the host. Spawn the
+      // joiner immediately and ship them a fresh snapshot so they enter
+      // the world without waiting for a lobby.
+      if (this.game.running && slot.playerId == null) {
+        const sm = this.game.addNetPlayer(slot.name, slot.character);
+        slot.playerId = sm.id;
+        try {
+          conn.send({
+            t: 'start',
+            level: this.game.levelId,
+            playerId: sm.id,
+            snap: this.game._snapshot(),
+          });
+        } catch (_) {}
+      }
+      this._refreshPeers();
+    } else if (data.t === 'input') {
+      slot.lastInput = data.in;
+    } else if (data.t === 'ping') {
+      try { conn.send({ t: 'pong', ts: data.ts }); } catch (_) {}
+    }
+  }
+
+  sendInput(input) {
+    if (this.role !== 'client' || !this.conn?.open) return;
+    try { this.conn.send({ t: 'input', in: input }); } catch (_) {}
+  }
+
+  broadcast(msg) {
+    if (this.role !== 'host') return;
+    for (const c of this.connections.values()) {
+      if (c.conn.open) try { c.conn.send(msg); } catch (_) {}
+    }
+  }
+
+  disconnect() {
+    this._intentionalDisconnect = true;
+    if (this.peer) try { this.peer.destroy(); } catch (_) {}
+    this.peer = null;
+    this.role = null;
+    this.connections.clear();
+    this.peers = [];
+    this.localPlayerId = null;
+    clearTimeout(this._joinResolveTimer);
+  }
+}

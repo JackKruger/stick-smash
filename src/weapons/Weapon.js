@@ -1,0 +1,275 @@
+import * as THREE from 'three';
+import * as CANNON from 'cannon-es';
+import { COL_GROUPS } from '../physics/PhysicsWorld.js';
+import { lerp } from '../util/math.js';
+
+// Base weapon class. Subclasses define visual mesh, fire behavior, etc.
+// Weapons have two "modes": world (free body that can be picked up) and held (parented to player hand).
+
+export class Weapon {
+  constructor(game, opts = {}) {
+    this.game = game;
+    this.id = opts.id ?? Math.random().toString(36).slice(2, 9);
+    this.kind = 'weapon';
+    this.name = 'Weapon';
+    this.icon = '🔧';
+    this.mesh = null;       // visual when held / in-world
+    this.holdOffset = new THREE.Vector3(0.4, 0.1, 0); // local to player
+    this.aimWeapon = false; // if true, mesh rotates with aim direction
+    this.poseRight = false; // 'aim' | false — set true on ranged in subclass
+    this.poseLeft = null;
+    this.holder = null;
+    this.body = null;        // when in-world
+    this.ammo = Infinity;
+    this.cooldown = 0;
+    this.fireDelay = 0.3;
+    this.dropCooldown = 0;
+    this.life = 30;          // seconds before world body removed
+    this.gravity = true;
+    // Swing state (set by melee subclass fire()) — base inits so updateMesh
+    // reads sane defaults before any swing happens.
+    this.swingTimer = 0;
+    this._swingDur = 0.25;
+    this._buildMesh();
+  }
+
+  _buildMesh() {
+    // override
+    const g = new THREE.BoxGeometry(0.6, 0.15, 0.15);
+    this.mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x888888 }));
+  }
+
+  // Spawn into world as pickup
+  spawnAt(x, y, z = 0) {
+    this.game.scene.add(this.mesh);
+    const body = new CANNON.Body({
+      mass: this.gravity ? 1.5 : 0,
+      material: this.game.physics.materials.prop,
+      collisionFilterGroup: COL_GROUPS.WEAPON,
+      collisionFilterMask: COL_GROUPS.WORLD | COL_GROUPS.PLAYER,
+      linearDamping: 0.2,
+      angularDamping: 0.4,
+    });
+    body.addShape(new CANNON.Box(new CANNON.Vec3(0.3, 0.08, 0.08)));
+    body.position.set(x, y, z);
+    body.userData = { kind: 'weapon', weapon: this };
+    this.game.physics.add(body);
+    this.body = body;
+    this.life = 30;
+    return this;
+  }
+
+  attachTo(player) {
+    this.holder = player;
+    if (this.body) {
+      this.game.physics.remove(this.body);
+      this.body = null;
+    }
+    if (this.mesh.parent !== this.game.scene) this.game.scene.add(this.mesh);
+  }
+
+  detach() {
+    this.holder = null;
+  }
+
+  dropAt(pos, vel) {
+    this.spawnAt(pos.x, pos.y + 0.5, 0);
+    if (this.body) {
+      this.body.velocity.set(vel?.x ?? 0, (vel?.y ?? 0) + 2, 0);
+      this.body.angularVelocity.set(0, 0, (Math.random() - 0.5) * 8);
+    }
+    this.dropCooldown = 0.4;
+  }
+
+  // Update mesh transform — anchored to the rig's right-hand world position
+  // so the weapon visibly tracks the hand (which moves with springs/wobble).
+  updateMesh(player) {
+    if (!player) return;
+    const hand = player.rig?.handR?.position;
+    const facing = player.facing;
+    const handX = hand ? hand.x : player.position.x + facing * 0.3;
+    const handY = hand ? hand.y : player.position.y + 0.65;
+
+    if (this.aimWeapon) {
+      const aim = player.aimDir;
+      const aimAng = Math.atan2(aim.y, aim.x);
+      this.mesh.position.set(handX, handY, 0);
+      this.mesh.rotation.set(0, 0, aimAng);
+      this.mesh.scale.set(1, facing >= 0 ? 1 : -1, 1);
+    } else if (this.swingTimer > 0) {
+      // Three-phase melee swing: anticipation (rear-back), strike (whip-through
+      // a wide arc with smoothstep eased velocity), follow-through (overshoot
+      // then settle). Sells weight + impact instead of a flat sweep.
+      const dur = this._swingDur || 0.25;
+      const phase = 1 - this.swingTimer / dur;
+      let localAng;
+      if (phase < 0.18) {
+        // Anticipation: from rest, blade rotates UP and BACK over the shoulder.
+        const t = phase / 0.18;
+        const e = 1 - Math.pow(1 - t, 3);            // ease-out
+        localAng = Math.PI / 2 + 0.6 * e;            // up → up-and-back (~2.17 rad)
+      } else if (phase < 0.85) {
+        // Strike: smoothstep through a big arc — slow start, fast at impact.
+        const t = (phase - 0.18) / 0.67;
+        const e = t * t * (3 - 2 * t);
+        localAng = (Math.PI / 2 + 0.6) + (-Math.PI - 0.4) * e;  // overshoots forward-down
+      } else {
+        // Follow-through: ease back toward a relaxed forward hang.
+        const t = (phase - 0.85) / 0.15;
+        const start = (Math.PI / 2 + 0.6) + (-Math.PI - 0.4); // ≈ -1.27
+        localAng = lerp(start, -0.4, t);
+      }
+      const bladeAng = facing >= 0 ? localAng : Math.PI - localAng;
+      this.mesh.position.set(handX, handY, 0);
+      this.mesh.rotation.set(0, 0, bladeAng);
+      this.mesh.scale.set(1, 1, 1);
+    } else {
+      // Idle: when aiming, snap to aim direction. Otherwise drop into a
+      // relaxed grip — blade angled slightly down-forward, hanging at the
+      // hand. Reads as "ready" rather than perpetually pointed.
+      const aim = player.aimDir;
+      const aimActive = player.input?.aimActive;
+      let ang;
+      if (aim && aimActive) {
+        ang = Math.atan2(aim.y, aim.x);
+      } else {
+        // Mild downward angle when relaxed — adds small breathing offset so
+        // the blade doesn't lock to a frozen pose.
+        const breath = Math.sin(player.rig?.t ?? 0) * 0.04;
+        ang = facing >= 0 ? -0.15 + breath : Math.PI + 0.15 - breath;
+      }
+      this.mesh.position.set(handX, handY, 0);
+      this.mesh.rotation.set(0, 0, ang);
+      this.mesh.scale.set(1, facing >= 0 ? 1 : -1, 1);
+    }
+  }
+
+  // World tick — update mesh from body if free.
+  worldTick(dt) {
+    if (this.body && !this.holder) {
+      const p = this.body.position;
+      const q = this.body.quaternion;
+      this.mesh.position.set(p.x, p.y, p.z);
+      this.mesh.quaternion.set(q.x, q.y, q.z, q.w);
+      this.life -= dt;
+      if (this.life <= 0) this.destroy();
+    }
+    if (this.cooldown > 0) this.cooldown -= dt;
+    if (this.dropCooldown > 0) this.dropCooldown -= dt;
+  }
+
+  tryFire(player) {
+    if (this.cooldown > 0) return;
+    this.cooldown = this.fireDelay;
+    this.fire(player);
+    // Anime-style melee lunge: any weapon flagged `melee = true` gives the
+    // wielder a strong forward burst toward where they're aiming so swings
+    // close distance instead of just whiffing on a stationary opponent.
+    // Subclass can tune via `lungeSpeed`. Set `melee = false` to opt out.
+    if (this.melee) this._lungeMelee(player);
+    this.ammo--;
+    if (this.ammo <= 0) {
+      // drop empty weapon
+      player.weapon = null;
+      this.destroy();
+    }
+  }
+
+  _lungeMelee(player) {
+    if (!player?.body) return;
+    // Grounded-only — air-spam was letting players "fly" by stacking
+    // upward velocity with every swing. Pure horizontal kick on the floor.
+    if (!player.grounded) return;
+    const ax = player.input?.aimActive ? player.aimDir.x : player.facing;
+    const norm = Math.abs(ax) || 1;
+    const dx = ax / norm;
+    const speed = this.lungeSpeed ?? 12;
+    player.body.velocity.x = dx * speed;
+  }
+
+  fire(player) { /* override */ }
+
+  altFire(player) { /* optional */ }
+
+  destroy() {
+    if (this.mesh && this.mesh.parent) this.mesh.parent.remove(this.mesh);
+    if (this.body) { this.game.physics.remove(this.body); this.body = null; }
+    if (this.holder?.weapon === this) this.holder.weapon = null;
+    this.holder = null;
+    this._destroyed = true;
+  }
+
+  // Clash check — call BEFORE applying weapon damage. Returns true if the
+  // target is also mid-swing of a melee weapon / fist while facing this
+  // attacker; in that case, both attacks parry (handled by Stickman._clash).
+  // The caller should treat a true return as "skip damage this strike."
+  _tryClash(target) {
+    if (!this.holder) return false;
+    const me = this.holder;
+    const targetWeaponSwinging = target.weapon && target.weapon.swingTimer > 0 && !target.weapon.aimWeapon;
+    const targetPunching = !target.weapon && target.attackTimer > 0;
+    if (!targetWeaponSwinging && !targetPunching) return false;
+    const dirToTarget = Math.sign(target.position.x - me.position.x);
+    if (dirToTarget !== me.facing) return false;
+    if (-dirToTarget !== target.facing) return false;
+    me._clash(target);
+    return true;
+  }
+
+  // Helper for melee weapons: deflect projectiles passing through the swing arc.
+  // Call once per active swing tick, with the world-space center + radius of the strike.
+  // Also damages physics-chain segs (pendulum links + hanging-platform
+  // suspensions) that fall in the arc — this is how players sever chains
+  // with melee. We piggyback off this single call site so every melee weapon
+  // gets chain damage for free.
+  _reflectProjectiles(cx, cy, radius) {
+    if (!this.holder) return;
+    const r2 = radius * radius;
+    if (this.game?.projectiles) {
+      for (const pr of this.game.projectiles) {
+        if (pr.dead) continue;
+        if (pr.owner === this.holder) continue;
+        const dx = pr.body.position.x - cx;
+        const dy = pr.body.position.y - cy;
+        if (dx * dx + dy * dy > r2) continue;
+        pr.body.velocity.x = -pr.body.velocity.x * 1.4 + this.holder.facing * 4;
+        pr.body.velocity.y = Math.abs(pr.body.velocity.y) * 0.6 + 4;
+        pr.owner = this.holder;
+        this.game.fx.particles.burst(pr.body.position.x, pr.body.position.y, 0, { count: 10, speed: 8, color: 0xffffff });
+        this.game.fx.camera.punch(0.08);
+        this.game.hitStop?.(0.04);
+      }
+    }
+    this._damageChainsInArc(cx, cy, radius, this.chainSwingDmg ?? 14);
+  }
+
+  _damageChainsInArc(cx, cy, radius, dmg) {
+    const segs = this.game?.level?._chainSegs;
+    if (!segs || !segs.size) return;
+    const r2 = radius * radius;
+    // Per-swing dedupe lives on the same `this.hits` Set the weapon already
+    // resets each time it starts a new swing — so chain hits naturally reset
+    // between swings without needing extra plumbing.
+    const hitSet = this.hits ?? new Set();
+    // Snapshot the iteration set — `seg.damage()` can dissolve a chain
+    // section, mutating `_chainSegs` mid-loop. Iterating a snapshot frees
+    // us from concurrent-modify ambiguity.
+    const list = [...segs];
+    for (const seg of list) {
+      if (!seg || seg.dead || !seg.body) continue;
+      const body = seg.body;
+      // Re-check velocity exists (paranoid: a body teardown that races
+      // with this loop could leave a stale ref with cleared fields).
+      if (!body.velocity || !body.position) continue;
+      const key = `chain_${body.id}`;
+      if (hitSet.has(key)) continue;
+      const dx = body.position.x - cx;
+      const dy = body.position.y - cy;
+      if (dx * dx + dy * dy > r2) continue;
+      hitSet.add(key);
+      body.velocity.x += this.holder.facing * 4;
+      body.velocity.y += 2;
+      seg.damage(dmg, this.holder);
+    }
+  }
+}
