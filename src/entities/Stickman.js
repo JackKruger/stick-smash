@@ -97,6 +97,7 @@ export class Stickman {
     this.aimDir = new THREE.Vector2(1, 0);
     this.crouching = false;
     this.sliding = false;
+    this._currentPlanetRef = null;     // populated by _updateGroundCheck on curved-gravity levels
 
     // Combat
     this.attackTimer = 0;        // counts down through swing
@@ -388,6 +389,7 @@ export class Stickman {
 
   _updateGroundCheck() {
     if (this.game?.level?.curvedGravity) {
+      this._currentPlanetRef = this._currentPlanet();
       const planet = this._currentPlanetRef;
       if (!planet) {
         this.grounded = false;
@@ -400,11 +402,17 @@ export class Stickman {
       const r = Math.hypot(dx, dy) || 1;
       const ux = dx / r, uy = dy / r;
       const top = { x: this.body.position.x, y: this.body.position.y, z: 0 };
-      const bot = { x: this.body.position.x - ux * 0.95, y: this.body.position.y - uy * 0.95, z: 0 };
+      const bot = {
+        x: this.body.position.x - ux * 0.95,
+        y: this.body.position.y - uy * 0.95,
+        z: 0,
+      };
       const hit = this.world.raycast(top, bot, { mask: COL_GROUPS.WORLD });
       const groundedRaw = !!hit;
       const lockActive = performance.now() < (this._jumpLockUntil || 0);
-      const rising = this.body.velocity.y > 0.5;
+      // FIX I1: use radial outward velocity, not world-y, for the rising check.
+      const vR = this.body.velocity.x * ux + this.body.velocity.y * uy;
+      const rising = vR > 0.5;
       const jumpLocked = lockActive && rising;
       this.grounded = groundedRaw && !jumpLocked;
       this.groundNormalY = hit ? hit.hitNormalWorld.y : 1;
@@ -968,8 +976,7 @@ export class Stickman {
     }
 
     if (this.game?.level?.curvedGravity) {
-      const planet = this._currentPlanet();
-      this._currentPlanetRef = planet;
+      const planet = this._currentPlanetRef;
       if (planet) {
         const dx = this.body.position.x - planet.cx;
         const dy = this.body.position.y - planet.cy;
@@ -992,6 +999,34 @@ export class Stickman {
           this.body.velocity.y *= k;
         }
         if (Math.abs(newVT) > 0.2) this.facing = Math.sign(newVT) || this.facing;
+
+        // Jump — apply impulse along radial up (ux, uy). Mirrors the flat-gravity
+        // jump logic but oriented to the planet surface. `jumpPressed` is set
+        // by the input layer; coyote + air-jump rules are the same as flat.
+        const now = this.input;
+        const wantJump = now.jumpPressed && performance.now() >= (this._jumpInputCooldown || 0);
+        const jumpSpeed = 11;
+        if (wantJump) {
+          if (this.grounded || this.coyote > 0) {
+            // Replace radial component with jumpSpeed outward; preserve tangential.
+            const newVR = jumpSpeed;
+            this.body.velocity.x = newVT * tx + newVR * ux;
+            this.body.velocity.y = newVT * ty + newVR * uy;
+            this.coyote = 0;
+            this._jumpLockUntil = performance.now() + 80;
+            this._jumpInputCooldown = performance.now() + 120;
+            audio.jump?.();
+            this.grounded = false;
+          } else if (this.airJumpsLeft > 0) {
+            this.airJumpsLeft--;
+            const newVR = jumpSpeed * 0.95;
+            this.body.velocity.x = newVT * tx + newVR * ux;
+            this.body.velocity.y = newVT * ty + newVR * uy;
+            this._jumpLockUntil = performance.now() + 80;
+            this._jumpInputCooldown = performance.now() + 120;
+            audio.jump?.();
+          }
+        }
         return;
       }
       // No planet captured — leave gravity preStep to handle drift, no walk control.
