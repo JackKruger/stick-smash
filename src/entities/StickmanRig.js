@@ -6,6 +6,7 @@ import { lerp, damp, clamp } from '../util/math.js';
 
 const _v = new THREE.Vector3();
 const _yAxis = new THREE.Vector3(0, 1, 0);
+const Z_STAGGER = 0.08;
 
 function makeLimb(radius, length, mat) {
   const g = new THREE.CylinderGeometry(radius, radius, length, 8, 1, false);
@@ -648,10 +649,12 @@ export class StickmanRig {
     }
 
     // Render limbs via IK using the spring-chased extremity positions.
-    this._drawArm(sLX, sLY, this._handLPos.x, this._handLPos.y, hipZ, this.upperArmL, this.lowerArmL, this.handL, this.shoulderL, this.elbowL, false, false);
-    this._drawArm(sRX, sRY, this._handRPos.x, this._handRPos.y, hipZ, this.upperArmR, this.lowerArmR, this.handR, this.shoulderR, this.elbowR, true, !!params.gumGumPunch);
-    this._drawLeg(hipLX, hipLY, this._footLPos.x, this._footLPos.y, hipZ, this.upperLegL, this.lowerLegL, this.footL, this.hipL, this.kneeL, false);
-    this._drawLeg(hipRX, hipRY, this._footRPos.x, this._footRPos.y, hipZ, this.upperLegR, this.lowerLegR, this.footR, this.hipR, this.kneeR, true);
+    const zL = hipZ - Z_STAGGER;
+    const zR = hipZ + Z_STAGGER;
+    this._drawArm(sLX, sLY, this._handLPos.x, this._handLPos.y, zL, this.upperArmL, this.lowerArmL, this.handL, this.shoulderL, this.elbowL, false, false);
+    this._drawArm(sRX, sRY, this._handRPos.x, this._handRPos.y, zR, this.upperArmR, this.lowerArmR, this.handR, this.shoulderR, this.elbowR, true, !!params.gumGumPunch);
+    this._drawLeg(hipLX, hipLY, this._footLPos.x, this._footLPos.y, zL, this.upperLegL, this.lowerLegL, this.footL, this.hipL, this.kneeL, false);
+    this._drawLeg(hipRX, hipRY, this._footRPos.x, this._footRPos.y, zR, this.upperLegR, this.lowerLegR, this.footR, this.hipR, this.kneeR, true);
 
     // Hand orientation for aim
     if (params.armPoseR === 'aim' || params.armPoseR === 'attack') {
