@@ -36,7 +36,7 @@ export class Stickman {
       material: world.materials.player,
       linearDamping: 0.12,
       angularDamping: 0.99,
-      fixedRotation: true,
+      fixedRotation: !(opts.game?.level?.curvedGravity),
       allowSleep: false,  // direct velocity writes won't wake a sleeping body
       collisionFilterGroup: COL_GROUPS.PLAYER,
       collisionFilterMask: COL_GROUPS.WORLD | COL_GROUPS.PROP | COL_GROUPS.WEAPON | COL_GROUPS.HAZARD | COL_GROUPS.PLAYER | COL_GROUPS.PROJECTILE,
@@ -1280,6 +1280,34 @@ export class Stickman {
       this.body.angularVelocity.setZero();
       this.body.position.set(0, 5, 0);
     }
+
+    if (this.game?.level?.curvedGravity) {
+      this._updateBodyRotation(dt);
+    }
+  }
+
+  // Continuously slerp the capsule body's quaternion so its local +Y axis
+  // points away from the current planet's center. Outside any halo, body
+  // settles back toward world up. Z-axis lock in PhysicsWorld.postStep
+  // keeps rotation strictly in-plane (no pitch/yaw).
+  _updateBodyRotation(dt) {
+    const planet = this._currentPlanetRef;
+    let targetAngle = 0;
+    if (planet) {
+      const dx = this.body.position.x - planet.cx;
+      const dy = this.body.position.y - planet.cy;
+      targetAngle = Math.atan2(dy, dx) - Math.PI / 2;
+    }
+    // Read current Z rotation from the body quaternion.
+    const q = this.body.quaternion;
+    const curAngle = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
+    let delta = targetAngle - curAngle;
+    while (delta > Math.PI) delta -= Math.PI * 2;
+    while (delta < -Math.PI) delta += Math.PI * 2;
+    const rate = 12;          // rad/s — tunable feel
+    const step = clamp(delta, -rate * dt, rate * dt);
+    const newAngle = curAngle + step;
+    this.body.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 0, 1), newAngle);
   }
 
   _syncRig(dt, ragdoll) {
