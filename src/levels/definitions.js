@@ -1131,6 +1131,161 @@ export const LEVELS = [
       bg(8,  -0.8, 1.2, 0.4, 0xffaa22, -9.7),
     ],
   },
+
+  // ---------------------------------------------------------------------
+  // CRYSTAL CAVERN — tall vertical cave. Bioluminescent crystal spire as
+  // landmark. Every tile destructible (no bedrock); only lava is permanent.
+  // Hazards: lava + icicles under wood platforms. ~2x the height of other
+  // levels — requires the bumped Camera y-clamp from Task 1.
+  // ---------------------------------------------------------------------
+  {
+    id: 'crystalcave',
+    name: 'Crystal Cavern',
+    bgColor: 0x0a1a28,
+    tiles: [
+      // Mossy floor (hp 60, sand-stone color w/ green tint).
+      ...row(0, -12, 12, { material: 'stone', hp: 60, color: 0x5a6a58 }),
+      // Tough subfloor — destructible but hp 200. Lava at y=-5 below.
+      ...tough(-1, -12, 12, { color: 0x181820 }),
+      ...tough(-2, -12, 12, { color: 0x181820 }),
+      // Destructible wall columns left + right, full vertical extent.
+      ...col(-13, 1, 17, { shape: 'box', w: 0.6, h: 1, material: 'stone', hp: 120, color: 0x384450 }),
+      ...col( 13, 1, 17, { shape: 'box', w: 0.6, h: 1, material: 'stone', hp: 120, color: 0x384450 }),
+      // ---- Tier platforms (left + right, alternating stone / wood) ----
+      // Lower wraparound y=3 (stone, hp 60).
+      ...row(3, -11, -7, { material: 'stone', hp: 60, color: 0x5a6a58 }),
+      ...row(3,   7, 11, { material: 'stone', hp: 60, color: 0x5a6a58 }),
+      // Lower wood y=6 (icicles below — see Task 5).
+      ...row(6, -10, -7, { material: 'wood', hp: 18, color: 0x6a4020 }),
+      ...row(6,   7, 10, { material: 'wood', hp: 18, color: 0x6a4020 }),
+      // Mid stone left y=9.
+      ...row(9, -11, -7, { material: 'stone', hp: 60, color: 0x5a6a58 }),
+      // Mid wood right y=10.
+      ...row(10, 7, 11, { material: 'wood', hp: 18, color: 0x6a4020 }),
+      // Mid stone left y=13.
+      ...row(13, -10, -7, { material: 'stone', hp: 60, color: 0x5a6a58 }),
+      // Mid wood right y=14.
+      ...row(14, 7, 11, { material: 'wood', hp: 18, color: 0x6a4020 }),
+      // Upper stone left y=17.
+      ...row(17, -9, -6, { material: 'stone', hp: 60, color: 0x5a6a58 }),
+      // Upper chain wood right y=17. Chain anchored to invisible static point
+      // at (9, 24); 5 segments hang the platform. Cutting any seg → platform
+      // converts dynamic and falls (drop credit anyone standing on it).
+      ...row(17, 7, 11, {
+        material: 'wood', hp: 18, color: 0x6a4020,
+        chainAnchor: { x: 9, y: 24, segs: 5, hp: 30 },
+      }),
+      // Top sanctum y=20 (durable prize platform).
+      ...row(20, -5, 5, { material: 'stone', hp: 80, color: 0x6a7a68 }),
+      // ---- Crystal spire centerpiece. Tilted shards form a faceted
+      // cluster silhouette. Each shard is its own tile with HP.
+      // Tile y is the CENTER of the box; spec heights are full shard heights
+      // with base at floor y=0, so y_center = h/2.
+      // KNOWN LIMITATION: shards with fractional y bypass the integer-grid
+      // damageArea lookup, so explosion splash (grenade/RPG) only reaches
+      // the right-magenta shard (y=2.0). Single-target attacks (bullets,
+      // melee, throws) hit every shard via Cannon collision callbacks.
+      // Acceptable: spire reads thematically as splash-resistant crystal.
+      // Back magenta — durable, tilted -6°.
+      { x: -2, y: 2.5, shape: 'box', w: 1.0, h: 5.0, d: 1.0,
+        material: 'stone', hp: 80, rotZ: -0.105,
+        color: 0xb060d0, emissive: 0xb060d0, emissiveIntensity: 0.7 },
+      // Main cyan — durable, vertical, tallest.
+      { x: 0, y: 3.25, shape: 'box', w: 1.4, h: 6.5, d: 1.2,
+        material: 'stone', hp: 80,
+        color: 0x5ec8e8, emissive: 0x5ec8e8, emissiveIntensity: 0.8 },
+      // Right magenta — durable, tilted +8°.
+      { x: 2, y: 2.0, shape: 'box', w: 0.9, h: 4.0, d: 0.9,
+        material: 'stone', hp: 80, rotZ: 0.140,
+        color: 0xb060d0, emissive: 0xb060d0, emissiveIntensity: 0.7 },
+      // Front cyan small — brittle, tilted +4°.
+      { x: -1, y: 1.25, shape: 'box', w: 0.7, h: 2.5, d: 0.7,
+        material: 'stone', hp: 25, rotZ: 0.070,
+        color: 0x80c8e0, emissive: 0x80c8e0, emissiveIntensity: 0.6 },
+      // Tip cyan — brittle, glows brightest, sits atop main cyan.
+      { x: 0, y: 6.5, shape: 'box', w: 0.6, h: 2.0, d: 0.6,
+        material: 'stone', hp: 25,
+        color: 0xc8f4ff, emissive: 0xc8f4ff, emissiveIntensity: 1.0 },
+      // Yellow accent nub — short, brittle, breaks for spectacle.
+      { x: 1, y: 0.5, shape: 'box', w: 0.5, h: 1.0, d: 0.5,
+        material: 'stone', hp: 25,
+        color: 0xe8c440, emissive: 0xe8c440, emissiveIntensity: 0.8 },
+    ],
+    hazards: [
+      // Kill plane.
+      { kind: 'lava', x: 0, y: -5, w: 36, h: 1.4, dps: 50 },
+      // Icicles (pointDown spikes) hanging under each wood platform.
+      // Light-blue color to read as crystal-frosted, not torch-orange.
+      { kind: 'spike', x: -8.5, y: 5.5,  w: 2.4, pointDown: true, color: 0xa8c8d8 },  // under y=6 wood left
+      { kind: 'spike', x:  8.5, y: 5.5,  w: 2.4, pointDown: true, color: 0xa8c8d8 },  // under y=6 wood right
+      { kind: 'spike', x:  9,   y: 9.5,  w: 2.6, pointDown: true, color: 0xa8c8d8 },  // under y=10 wood right
+      { kind: 'spike', x:  9,   y: 13.5, w: 2.6, pointDown: true, color: 0xa8c8d8 },  // under y=14 wood right
+      { kind: 'spike', x:  9,   y: 16.5, w: 2.6, pointDown: true, color: 0xa8c8d8 },  // under y=17 chain wood right
+    ],
+    spawns: [
+      // Lower floor.
+      { x: -9, y: 1 }, { x: 9, y: 1 },
+      // Lower wood (y=6).
+      { x: -9, y: 7 }, { x: 9, y: 7 },
+      // Mid (y=13 stone left, y=10 wood right).
+      { x: -9, y: 14 }, { x: 9, y: 11 },
+      // Top sanctum.
+      { x: 0, y: 21 },
+    ],
+    weaponSpawns: [
+      // Top sanctum prize.
+      { x: 0, y: 21 },
+      // Mid tier rewards.
+      { x: -9, y: 14 }, { x: 9, y: 11 },
+      // Contested center between lower wood pair.
+      { x: 0, y: 7 },
+      // Lower wraparound.
+      { x: -9, y: 4 }, { x: 9, y: 4 },
+    ],
+    background: [
+      // ---- Far gradient walls (z=-14): dark teal-black depth fade. ----
+      bg(0, -2, 50, 8, 0x06101a, -14),
+      bg(0,  6, 50, 10, 0x0a1a28, -14),
+      bg(0, 14, 50, 8,  0x14283a, -14),
+      bg(0, 22, 50, 8,  0x0a1a28, -14),
+
+      // ---- Distant rock silhouette columns (z=-12). ----
+      bg(-22, 8,  4, 28, 0x162028, -12),
+      bg(-17, 6,  3, 22, 0x121c24, -12),
+      bg(-11, 4,  2, 14, 0x0e1820, -12),
+      bg( 11, 4,  2, 14, 0x0e1820, -12),
+      bg( 17, 6,  3, 22, 0x121c24, -12),
+      bg( 22, 8,  4, 28, 0x162028, -12),
+
+      // ---- Wall vein glow strips (z=-10). Cyan left, magenta right. ----
+      bgGlow(-12, 4,  0.4, 5, 0x5ee0ff, -10),
+      bgGlow(-12, 12, 0.4, 5, 0x5ee0ff, -10),
+      bgGlow(-12, 19, 0.4, 4, 0x5ee0ff, -10),
+      bgGlow( 12, 4,  0.4, 5, 0xd878ff, -10),
+      bgGlow( 12, 12, 0.4, 5, 0xd878ff, -10),
+      bgGlow( 12, 19, 0.4, 4, 0xd878ff, -10),
+
+      // ---- Bioluminescent mushroom dots scattered on bg (z=-9). ----
+      bgDisc(-10, 2,  0.25, 0x5ee0ff, -9, { emissiveIntensity: 1.4 }),
+      bgDisc(-7,  2,  0.18, 0xd878ff, -9, { emissiveIntensity: 1.2 }),
+      bgDisc(-4,  2,  0.22, 0xffd070, -9, { emissiveIntensity: 1.0 }),
+      bgDisc( 4,  2,  0.22, 0x5ee0ff, -9, { emissiveIntensity: 1.4 }),
+      bgDisc( 7,  2,  0.18, 0xd878ff, -9, { emissiveIntensity: 1.2 }),
+      bgDisc( 10, 2,  0.25, 0xffd070, -9, { emissiveIntensity: 1.0 }),
+      bgDisc(-9,  9,  0.20, 0x5ee0ff, -9, { emissiveIntensity: 1.2 }),
+      bgDisc( 9,  10, 0.20, 0xd878ff, -9, { emissiveIntensity: 1.2 }),
+      bgDisc(-7,  16, 0.18, 0xffd070, -9, { emissiveIntensity: 1.0 }),
+      bgDisc( 7,  16, 0.18, 0x5ee0ff, -9, { emissiveIntensity: 1.2 }),
+
+      // ---- Cyan ambient halo behind the spire (z=-9.5). ----
+      bgDisc(0, 4, 4.0, 0x5ee0ff, -9.5, { emissiveIntensity: 0.5 }),
+
+      // ---- Foreground mist patches (z=-8). Low-alpha cyan ovals. ----
+      bg(0, 0,  20, 0.6, 0x1a3848, -8),
+      bg(0, 8,  16, 0.5, 0x1a3848, -8),
+      bg(0, 15, 14, 0.4, 0x1a3848, -8),
+    ],
+  },
 ];
 
 export function getLevel(id) { return LEVELS.find(l => l.id === id) ?? LEVELS[0]; }
