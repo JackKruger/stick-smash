@@ -29,9 +29,10 @@ export function makePlanetGravity(level, game) {
       body.velocity.x += ax * dtLocal;
       body.velocity.y += ay * dtLocal;
     };
-    // 1. Every dynamic body in the world.
+    // 1. Every dynamic body in the world EXCEPT projectiles (handled below).
     for (const b of level.physics.world.bodies) {
       if (b.type !== CANNON.Body.DYNAMIC) continue;
+      if (b.userData?.kind === 'projectile') continue;
       applyTo(b);
     }
     // 2. Every active projectile (host-side; clients use snapshot interp).
