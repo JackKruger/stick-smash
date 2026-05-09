@@ -1,17 +1,18 @@
 import * as CANNON from 'cannon-es';
-import { PHYS_STEP } from '../../physics/PhysicsWorld.js';
 
 // Returns a per-step callback that applies summed planet gravity to every
 // dynamic body in the world AND every active projectile in `game`. The same
 // callback is used for both pre-step physics integration and projectile arc.
 export function makePlanetGravity(level, game) {
   const G = 1.5;                  // tuning constant
-  return function applyPlanetGravity(dt) {
-    // preStep fires fn() with no arguments — fall back to the fixed step size.
-    const dtLocal = dt ?? PHYS_STEP;
+  return function applyPlanetGravity() {
     const planets = level.planets;
     if (!planets.length) return;
-    // Helper: write summed acceleration onto velocity for one body.
+    // Helper: accumulate summed gravitational FORCE (= mass × accel) onto
+    // body.force. The cannon-shim's _stepOnce reads body.force AFTER preStep
+    // listeners run and applies it via Rapier.addForce. Writing to
+    // body.velocity here would be clobbered because the shim already pushed
+    // velocity → Rapier earlier in _stepOnce.
     const applyTo = (body) => {
       if (!body || body.mass === 0) return;
       let ax = 0, ay = 0;
@@ -26,8 +27,8 @@ export function makePlanetGravity(level, game) {
         ax += (dx / r) * a;
         ay += (dy / r) * a;
       }
-      body.velocity.x += ax * dtLocal;
-      body.velocity.y += ay * dtLocal;
+      body.force.x += body.mass * ax;
+      body.force.y += body.mass * ay;
     };
     // 1. Every dynamic body in the world EXCEPT projectiles (handled below).
     for (const b of level.physics.world.bodies) {
