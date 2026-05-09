@@ -17,6 +17,8 @@ export class Tile {
     this.indestructible = !!opts.indestructible;
     this.material = opts.material ?? 'stone';
     this.color = opts.color ?? this._colorFor(this.material);
+    this.emissive = opts.emissive ?? null;
+    this.emissiveIntensity = opts.emissiveIntensity ?? 0;
     this.shape = opts.shape || 'box';
     this.w = opts.w ?? 1;
     this.h = opts.h ?? 1;
@@ -87,6 +89,8 @@ export class Tile {
       color: this.color,
       roughness: 0.85,
       metalness: this.material === 'metal' ? 0.6 : 0.05,
+      emissive: this.emissive ?? 0x000000,
+      emissiveIntensity: this.emissiveIntensity,
     });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(x, y, 0);
