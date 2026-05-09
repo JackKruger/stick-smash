@@ -1243,8 +1243,47 @@ export const LEVELS = [
       { x: -9, y: 4 }, { x: 9, y: 4 },
     ],
     background: [
-      // Atmospheric bg added in Task 8. Flat dark fill for now.
-      bg(0, 10, 50, 30, 0x0a1a28, -14),
+      // ---- Far gradient walls (z=-14): dark teal-black depth fade. ----
+      bg(0, -2, 50, 8, 0x06101a, -14),
+      bg(0,  6, 50, 10, 0x0a1a28, -14),
+      bg(0, 14, 50, 8,  0x14283a, -14),
+      bg(0, 22, 50, 8,  0x0a1a28, -14),
+
+      // ---- Distant rock silhouette columns (z=-12). ----
+      bg(-22, 8,  4, 28, 0x162028, -12),
+      bg(-17, 6,  3, 22, 0x121c24, -12),
+      bg(-11, 4,  2, 14, 0x0e1820, -12),
+      bg( 11, 4,  2, 14, 0x0e1820, -12),
+      bg( 17, 6,  3, 22, 0x121c24, -12),
+      bg( 22, 8,  4, 28, 0x162028, -12),
+
+      // ---- Wall vein glow strips (z=-10). Cyan left, magenta right. ----
+      bgGlow(-12, 4,  0.4, 5, 0x5ee0ff, -10),
+      bgGlow(-12, 12, 0.4, 5, 0x5ee0ff, -10),
+      bgGlow(-12, 19, 0.4, 4, 0x5ee0ff, -10),
+      bgGlow( 12, 4,  0.4, 5, 0xd878ff, -10),
+      bgGlow( 12, 12, 0.4, 5, 0xd878ff, -10),
+      bgGlow( 12, 19, 0.4, 4, 0xd878ff, -10),
+
+      // ---- Bioluminescent mushroom dots scattered on bg (z=-9). ----
+      bgDisc(-10, 2,  0.25, 0x5ee0ff, -9, { emissiveIntensity: 1.4 }),
+      bgDisc(-7,  2,  0.18, 0xd878ff, -9, { emissiveIntensity: 1.2 }),
+      bgDisc(-4,  2,  0.22, 0xffd070, -9, { emissiveIntensity: 1.0 }),
+      bgDisc( 4,  2,  0.22, 0x5ee0ff, -9, { emissiveIntensity: 1.4 }),
+      bgDisc( 7,  2,  0.18, 0xd878ff, -9, { emissiveIntensity: 1.2 }),
+      bgDisc( 10, 2,  0.25, 0xffd070, -9, { emissiveIntensity: 1.0 }),
+      bgDisc(-9,  9,  0.20, 0x5ee0ff, -9, { emissiveIntensity: 1.2 }),
+      bgDisc( 9,  10, 0.20, 0xd878ff, -9, { emissiveIntensity: 1.2 }),
+      bgDisc(-7,  16, 0.18, 0xffd070, -9, { emissiveIntensity: 1.0 }),
+      bgDisc( 7,  16, 0.18, 0x5ee0ff, -9, { emissiveIntensity: 1.2 }),
+
+      // ---- Cyan ambient halo behind the spire (z=-9.5). ----
+      bgDisc(0, 4, 4.0, 0x5ee0ff, -9.5, { emissiveIntensity: 0.5 }),
+
+      // ---- Foreground mist patches (z=-8). Low-alpha cyan ovals. ----
+      bg(0, 0,  20, 0.6, 0x1a3848, -8),
+      bg(0, 8,  16, 0.5, 0x1a3848, -8),
+      bg(0, 15, 14, 0.4, 0x1a3848, -8),
     ],
   },
 ];
