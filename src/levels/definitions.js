@@ -649,66 +649,79 @@ export const LEVELS = [
   // platforms; planet/nebula in deep BG.
   // ---------------------------------------------------------------------
   // ---------------------------------------------------------------------
-  // SPACE — 6-planet gravity system. Walk-around surfaces, projectile arcs,
-  // meteor showers gated to 30s. See docs/superpowers/specs/2026-05-10-space-planet-redesign-design.md
+  // SPACE STATION — flat orbital ring layout (PLAYABLE).
+  // The Mario-Galaxy planet redesign is committed but disabled until the
+  // physics tuning is solid. Re-enable by switching this entry to the
+  // planet config in Git history (commit ddae489) once gravity feel is
+  // worked out; all the planet/meteor code in src/levels/space/ stays in
+  // the tree dormant until the level def opts into `curvedGravity: true`.
   // ---------------------------------------------------------------------
   {
     id: 'space',
-    name: 'Space',
-    bgColor: 0x000008,
-    gravity: 0,                  // world gravity off — planets supply their own
-    curvedGravity: true,         // Stickman + Camera switch to planet-aware mode
-    cameraClamp: { x: [-50, 50], y: [-35, 35], zoom: [14, 50] },
-    meteorShower: { activateAfter: 30, interval: [8, 14], perShower: [1, 3] },
-    killBound: { x: 50, y: 35 }, // |x|>50 or |y|>35 → instant KO
-    planets: [
-      { id: 'p1', cx: -14, cy:  4, radius: 6.0, mantleRadius: 4.0, coreRadius: 2.0, mass: 240 },
-      { id: 'p2', cx:  12, cy: -4, radius: 5.0, mantleRadius: 3.3, coreRadius: 1.6, mass: 167 },
-      { id: 'p3', cx:  -2, cy: -7, radius: 2.4, mantleRadius: 1.6, coreRadius: 0.8, mass:  38 },
-      { id: 'p4', cx:   1, cy:  6, radius: 2.8, mantleRadius: 1.9, coreRadius: 1.0, mass:  52 },
-      { id: 'p5', cx:  19, cy:  7, radius: 2.4, mantleRadius: 1.6, coreRadius: 0.8, mass:  38 },
-      { id: 'p6', cx: -22, cy: -7, radius: 2.0, mantleRadius: 1.4, coreRadius: 0.7, mass:  27 },
+    name: 'Space Station',
+    bgColor: 0x000010,
+    gravity: -5.0,
+    tiles: [
+      ...row(0, -10, 10, { material: 'metal', hp: 100, color: 0x707888 }),
+      ...row(-1, -8, 8, { material: 'metal', hp: 100, color: 0x4a5060 }),
+      ...tough(-2, -6, 6, { color: 0x202830 }),
+      // Side asteroid floats.
+      ...row(3, -12, -9, { material: 'stone', hp: 30, color: 0x6a605a }),
+      ...row(3,  9, 12, { material: 'stone', hp: 30, color: 0x6a605a }),
+      // Mid station deck.
+      ...row(6, -3, 3, { material: 'metal', hp: 50, color: 0x808898 }),
+      // Upper asteroid floats — staggered.
+      ...row(9, -8, -5, { material: 'stone', hp: 25, color: 0x6a605a }),
+      ...row(9,  5,  8, { material: 'stone', hp: 25, color: 0x6a605a }),
+      // Top dock.
+      ...row(12, -2, 2, { material: 'metal', hp: 60, color: 0x90a0b0 }),
+      // Solar-panel pillars.
+      { x: -6, y: 1.5, shape: 'box', w: 0.4, h: 2.2, material: 'metal', hp: 80, color: 0x305080 },
+      { x:  6, y: 1.5, shape: 'box', w: 0.4, h: 2.2, material: 'metal', hp: 80, color: 0x305080 },
+      // Crystal asteroid mid prop.
+      { x: 0, y: 4, shape: 'sphere', radius: 0.7, material: 'stone', hp: 50, color: 0x88aaff },
     ],
-    tiles: [],                   // no integer-grid tiles on this level
-    hazards: [],                 // no flat hazards either — planets carry their own
+    hazards: [
+      { kind: 'lava', x: 0, y: -6, w: 50, h: 1.4, dps: 999 },
+      { kind: 'pendulum', x: 0, y: 16, length: 5, amplitude: Math.PI / 2.8, speed: 0.8 },
+      { kind: 'spike', x: -7, y: 10.0, w: 1.6 },
+      { kind: 'spike', x:  7, y: 10.0, w: 1.6 },
+    ],
     spawns: [
-      { x: -14, y: -2.5 },       // top of planet 1
-      { x:  12, y:  1   },       // top of planet 2
-      { x:  -2, y: -4.5 },       // top of planet 3
-      { x:   1, y:  9   },       // top of planet 4
-      { x:  19, y:  9.5 },       // top of planet 5
-      { x: -22, y: -5   },       // top of planet 6
+      { x: -10, y: 1 }, { x: 10, y: 1 },
+      { x: -10, y: 4 }, { x: 10, y: 4 },
+      { x: 0, y: 7 },
+      { x: 0, y: 13 },
     ],
     weaponSpawns: [
-      { x: -14, y: -2.5 }, { x: 12, y: 1 }, { x: -2, y: -4.5 },
-      { x: 1, y: 9 }, { x: 19, y: 9.5 }, { x: -22, y: -5 },
+      { x: 0, y: 13 },                        // top dock prize
+      { x: 0, y: 7 },
+      { x: -10, y: 4 }, { x: 10, y: 4 },
+      { x: -6, y: 10 }, { x: 6, y: 10 },
+      { x: 0, y: 1 },
     ],
     background: [
-      // Distant gas giant + halo (decorative; not gravity-active).
-      bgSphere(-32, 22, 8, 0x2a4a8a, -18, { emissive: 0x102040, emissiveIntensity: 0.3 }),
-      bgDisc(-32, 22, 11, 0x4070cc, -18.2, { emissiveIntensity: 0.18 }),
-      // Nebula bands.
-      bgGlow(0, 18, 50, 1.4, 0x4d4080, -16),
-      bgGlow(8, 12, 32, 1.0, 0x803060, -16),
-      // Stars (~60).
+      bgSphere(-18, 6, 7, 0x2a4a8a, -16, { emissive: 0x102040, emissiveIntensity: 0.3 }),
+      bgDisc(-18, 6, 8, 0x4070cc, -16.2, { emissiveIntensity: 0.2 }),
+      bgSphere(15, 18, 1.6, 0xa0a0a0, -15),
+      bgGlow(-2, 22, 30, 1.5, 0x4d4080, -15),
+      bgGlow(8,  19, 18, 1.0, 0x803060, -15),
+      bgGlow(-6, 12, 22, 0.8, 0x5050a0, -15),
       ...(() => {
         const stars = [];
         const seeds = [
-          [-40, 14], [-36, 26], [-30, -22], [-22, 4], [-18, 28], [-12, -28], [-8, 18],
-          [-2, 30], [4, -20], [10, 24], [16, -10], [22, 30], [28, 8], [34, -16],
-          [40, 22], [44, -4], [-44, -10], [-26, 20], [-14, 14], [-6, -12], [2, 12],
-          [12, 30], [20, -28], [26, 18], [32, -8], [38, 14], [-38, 8], [-20, -16],
-          [0, -8], [6, 26], [14, -22], [22, 12], [30, -28], [36, 20], [42, -22],
-          [-42, 28], [-32, -2], [-24, 10], [-10, 22], [4, -28], [18, 6], [24, -10],
-          [-46, -28], [-16, 32], [-4, 6], [10, -16], [20, 28], [34, 4], [46, 10],
-          [-28, 32], [-12, -22], [12, 14], [26, -2], [40, -28], [-8, 10], [16, 28],
-          [-2, 26], [22, -16], [38, 32], [-46, 14],
+          [-22, 8], [-19, 16], [-15, 22], [-11, 9], [-7, 14], [-3, 21], [1, 11],
+          [5, 18], [9, 23], [13, 9], [17, 14], [20, 20], [22, 11], [-25, 12],
+          [-2, 7], [3, 25], [11, 7], [-13, 4], [16, 5], [-21, 25], [21, 4],
         ];
         for (const [x, y] of seeds) {
-          stars.push(bgGlow(x, y, 0.18, 0.18, 0xffffff, -17));
+          stars.push(bgGlow(x, y, 0.18, 0.18, 0xffffff, -16));
         }
         return stars;
       })(),
+      bg(12, 14, 1.4, 0.4, 0x808898, -14),
+      bg(12, 14.6, 0.2, 0.8, 0x808898, -14),
+      bgGlow(11.5, 14, 0.2, 0.2, 0xff4444, -13.9),
     ],
   },
 
