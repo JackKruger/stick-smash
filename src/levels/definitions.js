@@ -1131,6 +1131,46 @@ export const LEVELS = [
       bg(8,  -0.8, 1.2, 0.4, 0xffaa22, -9.7),
     ],
   },
+
+  // ---------------------------------------------------------------------
+  // CRYSTAL CAVERN — tall vertical cave. Bioluminescent crystal spire as
+  // landmark. Every tile destructible (no bedrock); only lava is permanent.
+  // Hazards: lava + icicles under wood platforms. ~2x the height of other
+  // levels — requires the bumped Camera y-clamp from Task 1.
+  // ---------------------------------------------------------------------
+  {
+    id: 'crystalcave',
+    name: 'Crystal Cavern',
+    bgColor: 0x0a1a28,
+    tiles: [
+      // Mossy floor (hp 60, sand-stone color w/ green tint).
+      ...row(0, -12, 12, { material: 'stone', hp: 60, color: 0x5a6a58 }),
+      // Tough subfloor — destructible but hp 200. Lava at y=-5 below.
+      ...tough(-1, -12, 12, { color: 0x181820 }),
+      ...tough(-2, -12, 12, { color: 0x181820 }),
+      // Destructible wall columns left + right, full vertical extent.
+      ...col(-13, 1, 17, { shape: 'box', w: 0.6, h: 1, material: 'stone', hp: 120, color: 0x384450 }),
+      ...col( 13, 1, 17, { shape: 'box', w: 0.6, h: 1, material: 'stone', hp: 120, color: 0x384450 }),
+    ],
+    hazards: [
+      // Kill plane.
+      { kind: 'lava', x: 0, y: -5, w: 36, h: 1.4, dps: 50 },
+    ],
+    spawns: [
+      // Tier-distributed spawns added in Task 4. For now spawn around the floor.
+      { x: -9, y: 1 }, { x: 9, y: 1 },
+      { x: -5, y: 1 }, { x: 5, y: 1 },
+      { x: 0,  y: 1 },
+    ],
+    weaponSpawns: [
+      { x: 0,  y: 1 },
+      { x: -8, y: 1 }, { x: 8, y: 1 },
+    ],
+    background: [
+      // Atmospheric bg added in Task 8. Flat dark fill for now.
+      bg(0, 10, 50, 30, 0x0a1a28, -14),
+    ],
+  },
 ];
 
 export function getLevel(id) { return LEVELS.find(l => l.id === id) ?? LEVELS[0]; }
