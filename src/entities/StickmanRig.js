@@ -274,12 +274,9 @@ export class StickmanRig {
     const landDrop = this._landImpact * 0.18;
     const hipX = pos.x;
     // Hip-foot reach budget: feet sit at pos.y - 0.75 (capsule bottom).
-    // Legs are 1.00m total. Hip at pos.y + 0.22 → diff 0.97m → 14° knee
-    // bend when standing (athletic, almost-straight). Bob/crouch/land drop
-    // hip from there to flex knees on impact and during stride. Prior value
-    // (+0.10) gave diff 0.85 = 64° permanent squat — feet rendered fine
-    // but visible silhouette read as crouched and stride was invisible
-    // because there was no straight-leg reference frame to swing from.
+    // Legs are 1.00m total. Hip at pos.y + 0.25 → diff 1.00m → legs read
+    // essentially straight at idle (IK clamps to maxReach 0.99). Bob/crouch
+    // /land drop hip from there to flex knees on impact and during stride.
     const hipY = pos.y + 0.25 - bob - crouchDrop - landDrop + breathBob;
     const hipZ = pos.z;
     this._hip.set(hipX, hipY, hipZ);
