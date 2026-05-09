@@ -27,3 +27,6 @@ build/
 # Debug screenshots / scratch
 .dbg-*
 *.dbg.png
+
+# Claude worktree state
+.claude/worktrees/
