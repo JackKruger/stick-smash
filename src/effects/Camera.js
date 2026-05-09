@@ -24,7 +24,7 @@ export class GameCamera {
       const p = t.position;
       // Skip players who've been flung out of the playable area — keeps the
       // camera framed on the action instead of chasing someone into the sky.
-      if (Math.abs(p.x) > 28 || p.y > 26 || p.y < -12) continue;
+      if (Math.abs(p.x) > 28 || p.y > 30 || p.y < -12) continue;
       cx += p.x; cy += p.y; n++;
       if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
       if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
@@ -41,7 +41,7 @@ export class GameCamera {
     this.zoom = damp(this.zoom, this.zoomTarget, 0.05, dt);
     // Hard clamp so the camera can never wander outside the playable area.
     this.center.x = clamp(this.center.x, -22, 22);
-    this.center.y = clamp(this.center.y, -6, 20);
+    this.center.y = clamp(this.center.y, -6, 24);
 
     let sx = 0, sy = 0;
     if (this.shake > 0.001) {
