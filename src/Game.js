@@ -702,7 +702,7 @@ export class Game {
   }
 
   _snapshot() {
-    return {
+    const data = {
       players: this.players.map(p => p ? {
         id: p.id, name: p.name, character: p.character,
         x: p.position.x, y: p.position.y,
@@ -714,6 +714,20 @@ export class Game {
       } : null),
       tiles: [...this.level.tiles.values()].map(t => [t.gx, t.gy, t.hp]),
     };
+    // Curved-gravity levels also ship player rotation + wedge HP. Meteors
+    // are host-only render in v1 (clients don't simulate them yet).
+    if (this.level?.curvedGravity) {
+      data.playersQ = this.players.map(p => p
+        ? [p.body.quaternion.x, p.body.quaternion.y, p.body.quaternion.z, p.body.quaternion.w]
+        : null);
+      data.wedges = [];
+      for (const planet of (this.level.planets ?? [])) {
+        for (const w of planet.wedges) {
+          if (w && w.hp < w.maxHp && w.hp > 0) data.wedges.push([planet.id, w.kind, w.idx, w.hp]);
+        }
+      }
+    }
+    return data;
   }
 
   applySnapshot(snap) {
@@ -760,6 +774,24 @@ export class Game {
       const t = this.level.tiles.get(`${gx},${gy}`);
       if (t && hp <= 0) t.destroy();
       else if (t) t.hp = hp;
+    }
+    // Curved-gravity: apply player quaternion + wedge HP (sent only by host
+    // when level.curvedGravity is true).
+    if (snap.playersQ) {
+      for (let i = 0; i < snap.playersQ.length; i++) {
+        const q = snap.playersQ[i];
+        const p = this.players[i];
+        if (!p || !q) continue;
+        p.body.quaternion.set(q[0], q[1], q[2], q[3]);
+      }
+    }
+    if (snap.wedges && this.level?.planets) {
+      for (const [planetId, kind, idx, hp] of snap.wedges) {
+        const planet = this.level.planets.find(pp => pp.id === planetId);
+        if (!planet) continue;
+        const w = planet.wedges.find(ww => ww && ww.kind === kind && ww.idx === idx);
+        if (w && hp < w.hp) w.damage(w.hp - hp);
+      }
     }
   }
 
