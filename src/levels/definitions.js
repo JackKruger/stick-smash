@@ -1151,20 +1151,51 @@ export const LEVELS = [
       // Destructible wall columns left + right, full vertical extent.
       ...col(-13, 1, 17, { shape: 'box', w: 0.6, h: 1, material: 'stone', hp: 120, color: 0x384450 }),
       ...col( 13, 1, 17, { shape: 'box', w: 0.6, h: 1, material: 'stone', hp: 120, color: 0x384450 }),
+      // ---- Tier platforms (left + right, alternating stone / wood) ----
+      // Lower wraparound y=3 (stone, hp 60).
+      ...row(3, -11, -7, { material: 'stone', hp: 60, color: 0x5a6a58 }),
+      ...row(3,   7, 11, { material: 'stone', hp: 60, color: 0x5a6a58 }),
+      // Lower wood y=6 (icicles below — see Task 5).
+      ...row(6, -10, -7, { material: 'wood', hp: 18, color: 0x6a4020 }),
+      ...row(6,   7, 10, { material: 'wood', hp: 18, color: 0x6a4020 }),
+      // Mid stone left y=9.
+      ...row(9, -11, -7, { material: 'stone', hp: 60, color: 0x5a6a58 }),
+      // Mid wood right y=10.
+      ...row(10, 7, 11, { material: 'wood', hp: 18, color: 0x6a4020 }),
+      // Mid stone left y=13.
+      ...row(13, -10, -7, { material: 'stone', hp: 60, color: 0x5a6a58 }),
+      // Mid wood right y=14.
+      ...row(14, 7, 11, { material: 'wood', hp: 18, color: 0x6a4020 }),
+      // Upper stone left y=17.
+      ...row(17, -9, -6, { material: 'stone', hp: 60, color: 0x5a6a58 }),
+      // Upper chain wood right y=17 (chainAnchor wired in Task 6).
+      ...row(17, 7, 11, { material: 'wood', hp: 18, color: 0x6a4020 }),
+      // Top sanctum y=20 (durable prize platform).
+      ...row(20, -5, 5, { material: 'stone', hp: 80, color: 0x6a7a68 }),
     ],
     hazards: [
       // Kill plane.
       { kind: 'lava', x: 0, y: -5, w: 36, h: 1.4, dps: 50 },
     ],
     spawns: [
-      // Tier-distributed spawns added in Task 4. For now spawn around the floor.
+      // Lower floor.
       { x: -9, y: 1 }, { x: 9, y: 1 },
-      { x: -5, y: 1 }, { x: 5, y: 1 },
-      { x: 0,  y: 1 },
+      // Lower wood (y=6).
+      { x: -9, y: 7 }, { x: 9, y: 7 },
+      // Mid (y=13 stone left, y=10 wood right).
+      { x: -9, y: 14 }, { x: 9, y: 11 },
+      // Top sanctum.
+      { x: 0, y: 21 },
     ],
     weaponSpawns: [
-      { x: 0,  y: 1 },
-      { x: -8, y: 1 }, { x: 8, y: 1 },
+      // Top sanctum prize.
+      { x: 0, y: 21 },
+      // Mid tier rewards.
+      { x: -9, y: 14 }, { x: 9, y: 11 },
+      // Contested center between lower wood pair.
+      { x: 0, y: 7 },
+      // Lower wraparound.
+      { x: -9, y: 4 }, { x: 9, y: 4 },
     ],
     background: [
       // Atmospheric bg added in Task 8. Flat dark fill for now.
