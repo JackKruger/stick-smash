@@ -40,8 +40,15 @@ export class GameCamera {
     this.center.y = damp(this.center.y, this.target.y, 0.0005, dt);
     this.zoom = damp(this.zoom, this.zoomTarget, 0.05, dt);
     // Hard clamp so the camera can never wander outside the playable area.
-    this.center.x = clamp(this.center.x, -22, 22);
-    this.center.y = clamp(this.center.y, -6, 20);
+    // Per-level clamp override. Space level uses wider bounds.
+    const lc = this.cam._level?.cameraClamp ?? null;
+    const clampX = lc?.x ?? [-22, 22];
+    const clampY = lc?.y ?? [-6, 20];
+    const clampZ = lc?.zoom ?? [12, 28];
+    this.center.x = clamp(this.center.x, clampX[0], clampX[1]);
+    this.center.y = clamp(this.center.y, clampY[0], clampY[1]);
+    this.zoomTarget = clamp(this.zoomTarget, clampZ[0], clampZ[1]);
+    this.zoom = clamp(this.zoom, clampZ[0], clampZ[1]);
 
     let sx = 0, sy = 0;
     if (this.shake > 0.001) {

@@ -174,6 +174,7 @@ export class Game {
     this._cleanup();
     this.levelId = levelId;
     this.level = new Level(this.scene, this.physics, this.fx, getLevel(levelId), this);
+    this.camera._level = this.level;
 
     this.players = [];
     this.weapons = [];
