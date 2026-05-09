@@ -80,6 +80,7 @@ export class Planet {
     body.addShape(new CANNON.Sphere(r));
     body.position.set(this.cx, this.cy, 0);
     // Reuse the existing Hazard contactPlayer pattern via a minimal stub.
+    const level = this.level;
     const hazard = {
       kind: 'lava', x: this.cx, y: this.cy, w: r * 2, h: r * 2,
       dps: 60, body, mesh,
@@ -91,6 +92,11 @@ export class Planet {
       update() { /* no-op */ },
       destroy() {
         if (this.mesh?.parent) this.mesh.parent.remove(this.mesh);
+        this.mesh?.geometry?.dispose();
+        this.mesh?.material?.dispose();
+        this.mesh = null;
+        if (this.body) level.physics.remove(this.body);
+        this.body = null;
       },
     };
     body.userData = { kind: 'hazard', hazard };
