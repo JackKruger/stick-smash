@@ -1168,8 +1168,13 @@ export const LEVELS = [
       ...row(14, 7, 11, { material: 'wood', hp: 18, color: 0x6a4020 }),
       // Upper stone left y=17.
       ...row(17, -9, -6, { material: 'stone', hp: 60, color: 0x5a6a58 }),
-      // Upper chain wood right y=17 (chainAnchor wired in Task 6).
-      ...row(17, 7, 11, { material: 'wood', hp: 18, color: 0x6a4020 }),
+      // Upper chain wood right y=17. Chain anchored to invisible static point
+      // at (9, 24); 5 segments hang the platform. Cutting any seg → platform
+      // converts dynamic and falls (drop credit anyone standing on it).
+      ...row(17, 7, 11, {
+        material: 'wood', hp: 18, color: 0x6a4020,
+        chainAnchor: { x: 9, y: 24, segs: 5, hp: 30 },
+      }),
       // Top sanctum y=20 (durable prize platform).
       ...row(20, -5, 5, { material: 'stone', hp: 80, color: 0x6a7a68 }),
     ],
