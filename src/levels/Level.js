@@ -3,6 +3,9 @@ import * as CANNON from 'cannon-es';
 import { COL_GROUPS } from '../physics/PhysicsWorld.js';
 import { audio } from '../audio/Audio.js';
 import { rand } from '../util/math.js';
+import { Planet } from './space/Planet.js';
+import { makePlanetGravity } from './space/PlanetGravity.js';
+import { MeteorShower } from './space/MeteorShower.js';
 
 // Level = grid of destructible tiles + static walls + hazards + spawn points + sky.
 
@@ -534,11 +537,12 @@ export class Hazard {
 }
 
 export class Level {
-  constructor(scene, physics, fx, def) {
+  constructor(scene, physics, fx, def, game = null) {
     this.scene = scene;
     this.physics = physics;
     this.fx = fx;
     this.def = def;
+    this.game = game;
     this.tiles = new Map();
     this.hazards = [];
     this._dynamicTiles = new Set();
@@ -548,6 +552,16 @@ export class Level {
     // sustain force) registered by hazards at build time.
     this._chainSegs = new Set();
     this._hazardDrivers = new Set();
+    // Space-level mode flags. When `curvedGravity` is true, players + projectiles
+    // get planet-source gravity instead of the global world gravity. Camera, kill
+    // bound, and meteor shower are also planet-level features.
+    this.curvedGravity = !!def.curvedGravity;
+    this.planetConfigs = def.planets ?? [];
+    this.planets = [];
+    this.cameraClamp = def.cameraClamp ?? null;
+    this.killBound = def.killBound ?? null;
+    this.meteorShowerCfg = def.meteorShower ?? null;
+    this.meteorShower = null;
     this.spawnPoints = def.spawns ?? [{ x: 0, y: 5 }];
     this.weaponSpawns = def.weaponSpawns ?? [{ x: 0, y: 4 }];
     this.bgColor = def.bgColor ?? 0x10101a;
@@ -571,6 +585,21 @@ export class Level {
       this.tiles.set(key, tile);
       tile.build(this.scene, this.physics);
     }
+
+    // Space-level: build planets from the config.
+    if (this.curvedGravity) {
+      for (const cfg of this.planetConfigs) {
+        const planet = new Planet(this, cfg);
+        planet.build(this.scene, this.physics);
+        this.planets.push(planet);
+      }
+      // Custom multi-planet gravity. World gravity is already 0 (set per
+      // level def). Pre-step accumulates summed pull onto each dynamic body.
+      this._planetGravityFn = makePlanetGravity(this, this.game);
+      this.physics.addPreStep(this._planetGravityFn);
+    }
+
+    if (this.meteorShowerCfg) this.meteorShower = new MeteorShower(this, this.meteorShowerCfg);
 
     // hazards
     for (const h of (this.def.hazards ?? [])) {
@@ -727,15 +756,42 @@ export class Level {
       const f = 1 - d / radius;
       seg.damage(amount * 0.6 * f, by);
     }
+    // Planet wedges (space level). Their composite keys (`planet${id}_crust_${i}`)
+    // don't show up in the integer-grid scan above, so iterate the planet array
+    // directly and use each wedge's static body position.
+    for (const planet of this.planets) {
+      for (const w of planet.wedges) {
+        if (!w || !w.body || w.hp <= 0) continue;
+        const dx = w.body.position.x - x, dy = w.body.position.y - y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > r2) continue;
+        const d = Math.sqrt(d2);
+        const f = 1 - d / radius;
+        w.damage(amount * f, by);
+      }
+    }
   }
   randomSpawn() { return this.spawnPoints[Math.floor(Math.random() * this.spawnPoints.length)]; }
   randomWeaponSpawn() { return this.weaponSpawns[Math.floor(Math.random() * this.weaponSpawns.length)]; }
 
   update(dt, players) {
+    if (this.killBound) {
+      const bx = this.killBound.x, by = this.killBound.y;
+      for (const p of players) {
+        if (!p || !p.alive) continue;
+        const x = p.body.position.x, y = p.body.position.y;
+        if (Math.abs(x) > bx || Math.abs(y) > by) {
+          p.takeDamage(p.maxHealth + 1, { attacker: null, weapon: 'void' });
+        }
+      }
+    }
+
     // Drive sustained hazards (pendulum sinusoidal force, etc.) before the
     // physics step happens — the Game loop calls level.update AFTER physics
     // step, so apply forces once here for the *next* step. Acceptable lag.
     for (const drive of this._hazardDrivers) drive(dt);
+
+    if (this.meteorShower) this.meteorShower.update(dt);
 
     for (const h of this.hazards) {
       h.update(dt);
@@ -880,6 +936,11 @@ export class Level {
   }
 
   destroy() {
+    if (this._planetGravityFn) {
+      this.physics.removePreStep(this._planetGravityFn);
+      this._planetGravityFn = null;
+    }
+    if (this.meteorShower) { this.meteorShower.destroy(); this.meteorShower = null; }
     for (const t of this.tiles.values()) t.destroy();
     for (const h of this.hazards) h.destroy();
     // Sweep any chain segs not already released by a hazard or tile destroy
@@ -890,5 +951,6 @@ export class Level {
     this._dynamicTiles.clear();
     this._chainSegs.clear();
     this._hazardDrivers.clear();
+    this.planets.length = 0;
   }
 }

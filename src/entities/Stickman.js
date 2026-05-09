@@ -36,7 +36,7 @@ export class Stickman {
       material: world.materials.player,
       linearDamping: 0.12,
       angularDamping: 0.99,
-      fixedRotation: true,
+      fixedRotation: !(opts.game?.level?.curvedGravity),
       allowSleep: false,  // direct velocity writes won't wake a sleeping body
       collisionFilterGroup: COL_GROUPS.PLAYER,
       collisionFilterMask: COL_GROUPS.WORLD | COL_GROUPS.PROP | COL_GROUPS.WEAPON | COL_GROUPS.HAZARD | COL_GROUPS.PLAYER | COL_GROUPS.PROJECTILE,
@@ -97,6 +97,7 @@ export class Stickman {
     this.aimDir = new THREE.Vector2(1, 0);
     this.crouching = false;
     this.sliding = false;
+    this._currentPlanetRef = null;     // populated by _updateGroundCheck on curved-gravity levels
 
     // Combat
     this.attackTimer = 0;        // counts down through swing
@@ -351,7 +352,7 @@ export class Stickman {
     this.body.angularVelocity.setZero();
     this.body.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 0, 1), 0);
     this.body.collisionFilterMask = COL_GROUPS.WORLD | COL_GROUPS.PROP | COL_GROUPS.WEAPON | COL_GROUPS.HAZARD | COL_GROUPS.PLAYER | COL_GROUPS.PROJECTILE;
-    this.body.fixedRotation = true;
+    this.body.fixedRotation = !(this.game?.level?.curvedGravity);
     this.body.linearDamping = 0.12;
     this.body.angularDamping = 0.99;
     this.body.updateMassProperties();
@@ -392,6 +393,45 @@ export class Stickman {
   }
 
   _updateGroundCheck() {
+    if (this.game?.level?.curvedGravity) {
+      this._currentPlanetRef = this._currentPlanet();
+      const planet = this._currentPlanetRef;
+      if (!planet) {
+        this.grounded = false;
+        this.groundNormalY = 1;
+        this.coyote = Math.max(0, this.coyote - this._dt);
+        return;
+      }
+      const dx = this.body.position.x - planet.cx;
+      const dy = this.body.position.y - planet.cy;
+      const r = Math.hypot(dx, dy) || 1;
+      const ux = dx / r, uy = dy / r;
+      const top = { x: this.body.position.x, y: this.body.position.y, z: 0 };
+      const bot = {
+        x: this.body.position.x - ux * 0.95,
+        y: this.body.position.y - uy * 0.95,
+        z: 0,
+      };
+      const hit = this.world.raycast(top, bot, { mask: COL_GROUPS.WORLD });
+      const groundedRaw = !!hit;
+      const lockActive = performance.now() < (this._jumpLockUntil || 0);
+      // FIX I1: use radial outward velocity, not world-y, for the rising check.
+      const vR = this.body.velocity.x * ux + this.body.velocity.y * uy;
+      const rising = vR > 0.5;
+      const jumpLocked = lockActive && rising;
+      this.grounded = groundedRaw && !jumpLocked;
+      this.groundNormalY = hit ? hit.hitNormalWorld.y : 1;
+      if (this.grounded && !this.prevGrounded) {
+        this.airJumpsLeft = this.airJumps;
+      }
+      if (this.grounded) {
+        this.coyote = 0.14;
+      } else {
+        this.coyote = Math.max(0, this.coyote - this._dt);
+      }
+      return;
+    }
+    // ... existing flat-gravity grounded check below ...
     const from = this.body.position;
     const yTop = from.y - BODY_HEIGHT / 2 - 0.02;
     const yBot = from.y - BODY_HEIGHT / 2 - 0.40;
@@ -880,6 +920,24 @@ export class Stickman {
     }
   }
 
+  // Find the planet whose pull on this body is strongest right now. Returns
+  // null if nothing is exerting meaningful gravity (deep space).
+  _currentPlanet() {
+    const planets = this.game?.level?.planets;
+    if (!planets || !planets.length) return null;
+    let best = null, bestA = 0.5;          // require at least 0.5 m/s² to claim
+    const G = 1.5;
+    for (const p of planets) {
+      const dx = p.cx - this.body.position.x;
+      const dy = p.cy - this.body.position.y;
+      const r2 = dx * dx + dy * dy;
+      if (r2 > p.haloRadius * p.haloRadius) continue;
+      const a = G * p.mass / Math.max(0.04, r2);
+      if (a > bestA) { bestA = a; best = p; }
+    }
+    return best;
+  }
+
   _move(dt) {
     const now = performance.now();
     const frozen = now < this._frozenUntil;
@@ -919,6 +977,64 @@ export class Stickman {
       if (this.input.aimActive && !!this.weapon?.aimWeapon) {
         this.facing = this.input.aimX >= 0 ? 1 : -1;
       }
+      return;
+    }
+
+    if (this.game?.level?.curvedGravity) {
+      const planet = this._currentPlanetRef;
+      if (planet) {
+        const dx = this.body.position.x - planet.cx;
+        const dy = this.body.position.y - planet.cy;
+        const r = Math.hypot(dx, dy) || 1;
+        const ux = dx / r, uy = dy / r;
+        const tx = -uy, ty = ux;            // CCW perpendicular
+        const vT = this.body.velocity.x * tx + this.body.velocity.y * ty;
+        const vR = this.body.velocity.x * ux + this.body.velocity.y * uy;
+        const speedMaxC = this.crouching ? 2.5 : (boosted ? 9 : (flying ? 7 : 6.5));
+        const accelC = this.grounded ? (boosted ? 65 : 45) : (flying ? 36 : 18);
+        const targetT = moveX * speedMaxC;
+        const dvT = targetT - vT;
+        const stepT = clamp(dvT, -accelC * dt, accelC * dt);
+        const newVT = vT + stepT;
+        this.body.velocity.x = newVT * tx + vR * ux;
+        this.body.velocity.y = newVT * ty + vR * uy;
+        if (this.grounded && Math.abs(moveX) < 0.05) {
+          const k = Math.pow(0.001, dt);
+          this.body.velocity.x *= k;
+          this.body.velocity.y *= k;
+        }
+        if (Math.abs(newVT) > 0.2) this.facing = Math.sign(newVT) || this.facing;
+
+        // Jump — apply impulse along radial up (ux, uy). Mirrors the flat-gravity
+        // jump logic but oriented to the planet surface. `jumpPressed` is set
+        // by the input layer; coyote + air-jump rules are the same as flat.
+        const now = this.input;
+        const wantJump = now.jumpPressed && performance.now() >= (this._jumpInputCooldown || 0);
+        const jumpSpeed = 11;
+        if (wantJump) {
+          if (this.grounded || this.coyote > 0) {
+            // Replace radial component with jumpSpeed outward; preserve tangential.
+            const newVR = jumpSpeed;
+            this.body.velocity.x = newVT * tx + newVR * ux;
+            this.body.velocity.y = newVT * ty + newVR * uy;
+            this.coyote = 0;
+            this._jumpLockUntil = performance.now() + 80;
+            this._jumpInputCooldown = performance.now() + 120;
+            audio.jump?.();
+            this.grounded = false;
+          } else if (this.airJumpsLeft > 0) {
+            this.airJumpsLeft--;
+            const newVR = jumpSpeed * 0.95;
+            this.body.velocity.x = newVT * tx + newVR * ux;
+            this.body.velocity.y = newVT * ty + newVR * uy;
+            this._jumpLockUntil = performance.now() + 80;
+            this._jumpInputCooldown = performance.now() + 120;
+            audio.jump?.();
+          }
+        }
+        return;
+      }
+      // No planet captured — leave gravity preStep to handle drift, no walk control.
       return;
     }
 
@@ -1169,6 +1285,34 @@ export class Stickman {
       this.body.angularVelocity.setZero();
       this.body.position.set(0, 5, 0);
     }
+
+    if (this.game?.level?.curvedGravity) {
+      this._updateBodyRotation(dt);
+    }
+  }
+
+  // Continuously slerp the capsule body's quaternion so its local +Y axis
+  // points away from the current planet's center. Outside any halo, body
+  // settles back toward world up. Z-axis lock in PhysicsWorld.postStep
+  // keeps rotation strictly in-plane (no pitch/yaw).
+  _updateBodyRotation(dt) {
+    const planet = this._currentPlanetRef;
+    let targetAngle = 0;
+    if (planet) {
+      const dx = this.body.position.x - planet.cx;
+      const dy = this.body.position.y - planet.cy;
+      targetAngle = Math.atan2(dy, dx) - Math.PI / 2;
+    }
+    // Read current Z rotation from the body quaternion.
+    const q = this.body.quaternion;
+    const curAngle = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
+    let delta = targetAngle - curAngle;
+    while (delta > Math.PI) delta -= Math.PI * 2;
+    while (delta < -Math.PI) delta += Math.PI * 2;
+    const rate = 12;          // rad/s — tunable feel
+    const step = clamp(delta, -rate * dt, rate * dt);
+    const newAngle = curAngle + step;
+    this.body.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 0, 1), newAngle);
   }
 
   _syncRig(dt, ragdoll) {

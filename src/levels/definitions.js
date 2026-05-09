@@ -648,6 +648,14 @@ export const LEVELS = [
   // SPACE STATION — orbital ring with low gravity. Asteroids serve as
   // platforms; planet/nebula in deep BG.
   // ---------------------------------------------------------------------
+  // ---------------------------------------------------------------------
+  // SPACE STATION — flat orbital ring layout (PLAYABLE).
+  // The Mario-Galaxy planet redesign is committed but disabled until the
+  // physics tuning is solid. Re-enable by switching this entry to the
+  // planet config in Git history (commit ddae489) once gravity feel is
+  // worked out; all the planet/meteor code in src/levels/space/ stays in
+  // the tree dormant until the level def opts into `curvedGravity: true`.
+  // ---------------------------------------------------------------------
   {
     id: 'space',
     name: 'Space Station',
