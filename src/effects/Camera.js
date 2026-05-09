@@ -17,14 +17,25 @@ export class GameCamera {
   setTargets(arr) { this.targets = arr; }
 
   update(dt) {
+    // Per-level clamp override. Read once for use across the auto-fit pass
+    // and the final clamp block.
+    const lc = this.cam._level?.cameraClamp ?? null;
+    const clampX = lc?.x ?? [-22, 22];
+    const clampY = lc?.y ?? [-6, 20];
+    const clampZ = lc?.zoom ?? [12, 28];
+    // Skip-bound is a tiny outset of the center clamp so flung players
+    // don't drag the camera off into space.
+    const skipX = Math.max(Math.abs(clampX[0]), Math.abs(clampX[1])) + 6;
+    const skipYHi = clampY[1] + 6;
+    const skipYLo = clampY[0] - 6;
+
     // Dynamic frame: average alive targets, expand zoom to fit.
     let cx = 0, cy = 0, n = 0, minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const t of this.targets) {
       if (!t || !t.alive) continue;
       const p = t.position;
-      // Skip players who've been flung out of the playable area — keeps the
-      // camera framed on the action instead of chasing someone into the sky.
-      if (Math.abs(p.x) > 28 || p.y > 26 || p.y < -12) continue;
+      // Skip players who've been flung out of the playable area.
+      if (Math.abs(p.x) > skipX || p.y > skipYHi || p.y < skipYLo) continue;
       cx += p.x; cy += p.y; n++;
       if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
       if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
@@ -32,19 +43,13 @@ export class GameCamera {
     if (n > 0) {
       this.target.set(cx / n, cy / n + 1.2, 0);
       const spreadX = maxX - minX, spreadY = maxY - minY;
-      const fitZoom = clamp(Math.max(spreadX * 0.7, spreadY * 1.2) + 10, 12, 28);
+      const fitZoom = clamp(Math.max(spreadX * 0.7, spreadY * 1.2) + 10, clampZ[0], clampZ[1]);
       this.zoomTarget = fitZoom;
     }
 
     this.center.x = damp(this.center.x, this.target.x, 0.0001, dt);
     this.center.y = damp(this.center.y, this.target.y, 0.0005, dt);
     this.zoom = damp(this.zoom, this.zoomTarget, 0.05, dt);
-    // Hard clamp so the camera can never wander outside the playable area.
-    // Per-level clamp override. Space level uses wider bounds.
-    const lc = this.cam._level?.cameraClamp ?? null;
-    const clampX = lc?.x ?? [-22, 22];
-    const clampY = lc?.y ?? [-6, 20];
-    const clampZ = lc?.zoom ?? [12, 28];
     this.center.x = clamp(this.center.x, clampX[0], clampX[1]);
     this.center.y = clamp(this.center.y, clampY[0], clampY[1]);
     this.zoomTarget = clamp(this.zoomTarget, clampZ[0], clampZ[1]);
