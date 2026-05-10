@@ -498,13 +498,25 @@ export class Bow extends Weapon {
   }
   fire(player) {
     // Arrow with mild bullet drop — gravity on, scaled down so arc is gentle.
+    // Sticks into terrain or victims on hit (lifecycle handled by Projectile).
+    // Build a slightly more arrow-shaped mesh: shaft + fletching cone.
+    const arrowMat = new THREE.MeshStandardMaterial({ color: 0xc8a85c });
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.7, 6), arrowMat);
+    const head = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.12, 6), new THREE.MeshStandardMaterial({ color: 0x666666, metalness: 0.6 }));
+    head.position.y = 0.4;
+    const fletch = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.06, 0.01), new THREE.MeshStandardMaterial({ color: 0xff4d6d }));
+    fletch.position.y = -0.32;
+    const arrowGrp = new THREE.Group();
+    arrowGrp.add(shaft, head, fletch);
     const proj = new Projectile(this.game, {
       x: player.position.x + player.aimDir.x * 0.9, y: player.position.y + 0.7 + player.aimDir.y * 0.4,
-      vx: player.aimDir.x * 32, vy: player.aimDir.y * 32, damage: 45, owner: player,
-      gravity: true, gravityScale: 0.5, life: 2.2, radius: 0.06, color: 0xc8a85c, tracer: true,
-      mesh: { geometry: new THREE.CylinderGeometry(0.02, 0.02, 0.6, 6), material: new THREE.MeshStandardMaterial({ color: 0xc8a85c }) },
+      vx: player.aimDir.x * 34, vy: player.aimDir.y * 34, damage: 36, owner: player,
+      gravity: true, gravityScale: 0.45, life: 3, radius: 0.06, color: 0xc8a85c, tracer: true,
+      tracerColor: 0xeed28c,
+      sticky: true, stickLife: 7,
+      mesh: arrowGrp,
     });
-    // Spin so visual arrow aligns with velocity each frame
+    // Spin so visual arrow aligns with velocity each frame.
     proj._orientToVel = true;
     audio.shoot();
   }
@@ -522,20 +534,68 @@ export class Grenade extends Weapon {
     this.ammo = 3;
   }
   _buildMesh() {
-    const m = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 8), new THREE.MeshStandardMaterial({ color: 0x305030, roughness: 0.8 }));
-    this.mesh = m;
+    const grp = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.18, 14, 10), new THREE.MeshStandardMaterial({ color: 0x305030, roughness: 0.85, metalness: 0.2 }));
+    // Pineapple-style ridges for visual interest.
+    for (let i = 0; i < 3; i++) {
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.022, 6, 14), new THREE.MeshStandardMaterial({ color: 0x224020, roughness: 0.9 }));
+      ring.position.y = -0.1 + i * 0.1;
+      ring.rotation.x = Math.PI / 2;
+      grp.add(ring);
+    }
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.07, 8), new THREE.MeshStandardMaterial({ color: 0x707880, metalness: 0.7 }));
+    cap.position.y = 0.21;
+    const pin = new THREE.Mesh(new THREE.TorusGeometry(0.04, 0.012, 4, 8), new THREE.MeshStandardMaterial({ color: 0xc8a060, metalness: 0.7 }));
+    pin.position.y = 0.27;
+    pin.rotation.x = Math.PI / 2;
+    grp.add(body, cap, pin);
+    this.mesh = grp;
   }
   fire(player) {
+    const fuse = 2.0;
+    // Build the world-mesh so we can blink the body emissive as fuse runs out.
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x305030, emissive: 0x000000, roughness: 0.85 });
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.18, 14, 10), bodyMat);
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.07, 8), new THREE.MeshStandardMaterial({ color: 0x707880, metalness: 0.7 }));
+    cap.position.y = 0.21;
+    const grp = new THREE.Group();
+    grp.add(body, cap);
     const proj = new Projectile(this.game, {
       x: player.position.x + player.aimDir.x * 0.6, y: player.position.y + 0.7 + player.aimDir.y * 0.3,
       vx: player.aimDir.x * 18 + player.body.velocity.x * 0.5,
       vy: player.aimDir.y * 18 + 4,
       damage: 0, owner: player,
-      gravity: true, life: 1.6, radius: 0.18,
+      gravity: true, life: fuse, radius: 0.18,
       explosive: true, color: 0x305030,
-      mesh: { geometry: new THREE.SphereGeometry(0.18, 12, 8), material: new THREE.MeshStandardMaterial({ color: 0x305030 }) },
+      bounces: 5, bounceDamp: 0.55,
+      material: this.game.physics.materials.grenade,
+      angularDamping: 0.4,
+      mesh: grp,
+      explodeRadius: 3.4, explodeDamage: 45,
     });
-    proj.body.angularVelocity.set(0, 0, rand(-10, 10));
+    proj.body.angularVelocity.set(0, 0, rand(-12, 12));
+    // Fuse blink — emissive pulses faster as detonation nears.
+    const game = this.game;
+    let lastBeep = 0;
+    const origUpdate = proj.update.bind(proj);
+    proj.update = (dt) => {
+      if (!proj.dead) {
+        const t = 1 - Math.max(0, proj.life / fuse); // 0→1 over fuse
+        const freq = 4 + t * t * 22;
+        const k = 0.5 + 0.5 * Math.sin(performance.now() * 0.001 * freq * Math.PI * 2);
+        bodyMat.emissive.setRGB(k * (0.4 + t * 0.6), k * 0.05, 0);
+        bodyMat.emissiveIntensity = 0.4 + t * 1.6;
+        // Tick beep accelerates with fuse — last 0.6s gets rapid pings.
+        if (t > 0.45) {
+          const interval = Math.max(60, 360 - t * 320);
+          if (performance.now() - lastBeep > interval) {
+            lastBeep = performance.now();
+            audio.beep(900 + t * 400, 0.04, 'square', 0.18);
+          }
+        }
+      }
+      origUpdate(dt);
+    };
     audio.click();
   }
 }
@@ -573,6 +633,299 @@ export class RPG extends Weapon {
     if (!player.grounded) player.body.velocity.y -= player.aimDir.y * 5;
     audio.shoot(); audio.explode();
     this.game.fx.camera.punch(0.4);
+  }
+}
+
+// Sniper rifle — hitscan, line-of-sight laser sight. The laser updates each
+// tick to terminate at the first WORLD or PLAYER body the ray hits, so it
+// honours cover (walls block both the laser and the shot). Single-shot, big
+// damage, big recoil. Reward for committing to the aim animation.
+export class SniperRifle extends Weapon {
+  constructor(game) {
+    super(game);
+    this.name = 'Sniper';
+    this.icon = '🎯';
+    this.fireDelay = 1.0;
+    this.aimWeapon = true;
+    this.poseRight = 'aim';
+    this.ammo = 3;
+    this._laser = null;
+    this._laserDot = null;
+    this._tracerTime = 0;
+  }
+  _buildMesh() {
+    const grp = new THREE.Group();
+    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.13, 0.09), new THREE.MeshStandardMaterial({ color: 0x2a1a10 }));
+    stock.position.x = -0.05;
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.11, 0.09), new THREE.MeshStandardMaterial({ color: 0x222230, metalness: 0.6 }));
+    body.position.x = 0.32;
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.95, 10), new THREE.MeshStandardMaterial({ color: 0x111118, metalness: 0.85 }));
+    barrel.rotation.z = Math.PI / 2; barrel.position.x = 0.78;
+    const muzzle = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.06, 8), new THREE.MeshStandardMaterial({ color: 0x080808, metalness: 0.9 }));
+    muzzle.rotation.z = Math.PI / 2; muzzle.position.x = 1.27;
+    const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.32, 12), new THREE.MeshStandardMaterial({ color: 0x101018, metalness: 0.75 }));
+    scope.rotation.z = Math.PI / 2; scope.position.set(0.32, 0.16, 0);
+    const lens = new THREE.Mesh(new THREE.CircleGeometry(0.05, 12), new THREE.MeshStandardMaterial({ color: 0x44ddff, emissive: 0x2288cc, emissiveIntensity: 0.8 }));
+    lens.rotation.y = Math.PI / 2; lens.position.set(0.5, 0.16, 0);
+    const bipod = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.18, 0.04), new THREE.MeshStandardMaterial({ color: 0x333344 }));
+    bipod.position.set(0.7, -0.13, 0);
+    grp.add(stock, body, barrel, muzzle, scope, lens, bipod);
+    this.mesh = grp;
+  }
+  _muzzleWorld(player) {
+    // Muzzle position in WORLD coords. Anchor to player.position.x/y (body
+    // center) plus a fixed shoulder-height offset and a short reach along the
+    // aim direction. Rig hand bones are local to rig.group, so reading their
+    // .position directly mixes local + world frames — using player.position
+    // dodges that ambiguity entirely.
+    const ax = player.aimDir.x, ay = player.aimDir.y;
+    const baseX = player.position.x;
+    const baseY = player.position.y + 0.65;          // shoulder height
+    return { x: baseX + ax * 1.1, y: baseY + ay * 1.1 };
+  }
+  _castShot(player, maxRange = 60) {
+    // Two-ray approach because the cannon-shim Rapier raycast doesn't return
+    // the hit body — only the hit point + distance. Cast against WORLD/PROP
+    // (walls + tiles) and PLAYER separately, compare distances. Closest hit
+    // is the real hit; if no player ray hit before the world ray, line of
+    // sight is blocked by cover.
+    const mz = this._muzzleWorld(player);
+    const ax = player.aimDir.x, ay = player.aimDir.y;
+    const from = { x: mz.x, y: mz.y, z: 0 };
+    const to = { x: mz.x + ax * maxRange, y: mz.y + ay * maxRange, z: 0 };
+    const worldHit = this.game.physics.raycast(from, to, { mask: COL_GROUPS.WORLD | COL_GROUPS.PROP });
+    // For player hits we'd ideally raycast PLAYER mask, but the shim still
+    // can't tell us *which* player. Cheaper: walk the players list and find
+    // the nearest one whose body the ray pierces.
+    let playerHit = null;
+    let playerDist = Infinity;
+    for (const target of this.game.players) {
+      if (!target || !target.alive || target === player) continue;
+      const tx = target.position.x, ty = target.position.y + 0.6;
+      // Distance from the target's center to the infinite ray (perpendicular).
+      const rx = tx - from.x, ry = ty - from.y;
+      const along = rx * ax + ry * ay;            // projection onto ray dir
+      if (along < 0 || along > maxRange) continue;
+      const px = from.x + ax * along, py = from.y + ay * along;
+      const perp = Math.hypot(tx - px, ty - py);
+      if (perp > 0.55) continue;                  // body radius slack
+      if (along < playerDist) { playerDist = along; playerHit = target; }
+    }
+    const worldDist = worldHit ? worldHit.distance : Infinity;
+    if (playerHit && playerDist < worldDist) {
+      const hp = { x: from.x + ax * playerDist, y: from.y + ay * playerDist, z: 0 };
+      return { from: mz, to: hp, hit: { kind: 'player', target: playerHit, point: hp, distance: playerDist } };
+    }
+    if (worldHit) {
+      const hp = worldHit.hitPointWorld;
+      return { from: mz, to: { x: hp.x, y: hp.y, z: 0 }, hit: { kind: 'world', point: { x: hp.x, y: hp.y, z: 0 }, distance: worldDist } };
+    }
+    return { from: mz, to, hit: null };
+  }
+  worldTick(dt) {
+    super.worldTick(dt);
+    if (this._tracerTime > 0) this._tracerTime -= dt;
+    // Laser sight: only while held + aiming. Cleaned up in detach().
+    if (!this.holder) {
+      if (this._laser) { this._laser.visible = false; }
+      if (this._laserDot) this._laserDot.visible = false;
+      return;
+    }
+    const player = this.holder;
+    const aiming = !!player.input?.aimActive;
+    if (!aiming) {
+      if (this._laser) this._laser.visible = false;
+      if (this._laserDot) this._laserDot.visible = false;
+      return;
+    }
+    const cast = this._castShot(player);
+    if (!this._laser) {
+      const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+      const mat = new THREE.LineBasicMaterial({ color: 0xff3344, transparent: true, opacity: 0.55 });
+      this._laser = new THREE.Line(geo, mat);
+      this.game.scene.add(this._laser);
+      const dotGeo = new THREE.SphereGeometry(0.06, 8, 6);
+      const dotMat = new THREE.MeshBasicMaterial({ color: 0xff3344 });
+      this._laserDot = new THREE.Mesh(dotGeo, dotMat);
+      this.game.scene.add(this._laserDot);
+    }
+    this._laser.visible = true;
+    this._laserDot.visible = true;
+    const pos = this._laser.geometry.attributes.position;
+    pos.setXYZ(0, cast.from.x, cast.from.y, 0);
+    pos.setXYZ(1, cast.to.x, cast.to.y, 0);
+    pos.needsUpdate = true;
+    this._laserDot.position.set(cast.to.x, cast.to.y, 0);
+    // Tracer flash piggybacks on the laser line briefly after a shot.
+    this._laser.material.opacity = this._tracerTime > 0 ? 0.95 : 0.55;
+    const dotScale = 1 + (this._tracerTime > 0 ? 2 : 0);
+    this._laserDot.scale.setScalar(dotScale);
+  }
+  fire(player) {
+    const cast = this._castShot(player);
+    const ax = player.aimDir.x, ay = player.aimDir.y;
+    audio.shoot(); audio.beep(220, 0.18, 'sawtooth', 0.4);
+    this._tracerTime = 0.18;
+    // Big recoil — air recoil is huge to enable rocket-jump-style boosts.
+    const rec = player.grounded ? 5 : 12;
+    player.body.velocity.x -= ax * rec;
+    if (!player.grounded) player.body.velocity.y -= ay * 5;
+    this.game.fx.camera.punch(0.55);
+    this.game.hitStop?.(0.06);
+    this.game.fx.particles.burst(cast.from.x, cast.from.y, 0, { count: 14, speed: 8, color: 0xffd060 });
+    if (cast.hit) {
+      const hp = cast.hit.point;
+      if (cast.hit.kind === 'player') {
+        const sm = cast.hit.target;
+        if (sm && sm !== player && sm.alive && sm.invuln <= 0) {
+          sm.takeDamage(85, {
+            attacker: player, weapon: 'sniper',
+            kb: { x: ax * 14, y: 6 + Math.abs(ay) * 4 }, stun: 0.4,
+          });
+          this.game.fx.particles.blood?.(hp.x, hp.y, 0, ax >= 0 ? 1 : -1, 0.8);
+        }
+      }
+      // Tile damage: shim raycast doesn't return the hit body, so we damage
+      // any tile within a small radius of the hit point. Less precise than a
+      // single-tile hit but visually consistent and avoids needing body refs.
+      this.game.level.damageArea?.(hp.x, hp.y, 0.6, 30, this);
+      this.game.fx.particles.burst(hp.x, hp.y, 0, { count: 10, speed: 6, color: 0xffeeaa });
+    }
+  }
+  detach() {
+    super.detach();
+    // Hide laser when dropped — re-shown when picked back up + aimed.
+    if (this._laser) this._laser.visible = false;
+    if (this._laserDot) this._laserDot.visible = false;
+  }
+  destroy() {
+    if (this._laser) {
+      this._laser.parent?.remove(this._laser);
+      this._laser.geometry.dispose();
+      this._laser.material.dispose();
+      this._laser = null;
+    }
+    if (this._laserDot) {
+      this._laserDot.parent?.remove(this._laserDot);
+      this._laserDot.geometry.dispose();
+      this._laserDot.material.dispose();
+      this._laserDot = null;
+    }
+    super.destroy();
+  }
+}
+
+// Throwing knives — fast, light, sticky. High rate of fire, low per-hit dmg.
+// Niche between bow (slow, heavy) and pistol (fast, no stick) — sticks into
+// terrain and players for 5s, leaving visible record of recent fights.
+export class ThrowingKnives extends Weapon {
+  constructor(game) {
+    super(game);
+    this.name = 'Knives';
+    this.icon = '🔪';
+    this.fireDelay = 0.18;
+    this.aimWeapon = true;
+    this.poseRight = 'aim';
+    this.ammo = 8;
+  }
+  _buildMesh() {
+    const grp = new THREE.Group();
+    const blade = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.32, 4), new THREE.MeshStandardMaterial({ color: 0xddddee, metalness: 0.85 }));
+    blade.rotation.z = -Math.PI / 2; blade.position.x = 0.25;
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.05, 0.05), new THREE.MeshStandardMaterial({ color: 0x332010 }));
+    grip.position.x = 0.05;
+    grp.add(blade, grip);
+    this.mesh = grp;
+  }
+  fire(player) {
+    const ax = player.aimDir.x, ay = player.aimDir.y;
+    const knifeMat = new THREE.MeshStandardMaterial({ color: 0xddddee, metalness: 0.8 });
+    const blade = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.34, 4), knifeMat);
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.04, 0.04), new THREE.MeshStandardMaterial({ color: 0x332010 }));
+    grip.position.y = -0.2;
+    blade.position.y = 0.05;
+    const grp = new THREE.Group();
+    grp.add(blade, grip);
+    const proj = new Projectile(this.game, {
+      x: player.position.x + ax * 0.7, y: player.position.y + 0.7 + ay * 0.3,
+      vx: ax * 38, vy: ay * 38, damage: 22, owner: player,
+      gravity: true, gravityScale: 0.2, life: 1.6, radius: 0.05,
+      sticky: true, stickLife: 5, mesh: grp, color: 0xddddee,
+    });
+    proj._orientToVel = true;
+    audio.beep(900, 0.05, 'square', 0.18);
+    audio.swing();
+  }
+}
+
+// Sticky bomb — thrown adhesive. Sticks to first surface (player or terrain),
+// then a short fuse counts down to a fat explosion. Designed to discourage
+// camping: tag a perch and the camper has to bail.
+export class StickyBomb extends Weapon {
+  constructor(game) {
+    super(game);
+    this.name = 'Sticky';
+    this.icon = '🟢';
+    this.fireDelay = 0.7;
+    this.aimWeapon = true;
+    this.ammo = 2;
+  }
+  _buildMesh() {
+    const grp = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.16, 14, 10), new THREE.MeshStandardMaterial({ color: 0x66cc44, emissive: 0x224422, emissiveIntensity: 0.5, roughness: 0.6 }));
+    // Spikes give it the "burr" look — visually sticky.
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2;
+      const sp = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.07, 4), new THREE.MeshStandardMaterial({ color: 0x88ee66 }));
+      sp.position.set(Math.cos(a) * 0.16, Math.sin(a) * 0.16, 0);
+      sp.rotation.z = a - Math.PI / 2;
+      grp.add(sp);
+    }
+    grp.add(body);
+    this.mesh = grp;
+  }
+  fire(player) {
+    const ax = player.aimDir.x, ay = player.aimDir.y;
+    const fuse = 1.5;
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x66cc44, emissive: 0x224422, emissiveIntensity: 0.6, roughness: 0.6 });
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.16, 14, 10), bodyMat);
+    const grp = new THREE.Group();
+    grp.add(body);
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const sp = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.07, 4), new THREE.MeshStandardMaterial({ color: 0x88ee66 }));
+      sp.position.set(Math.cos(a) * 0.16, Math.sin(a) * 0.16, 0);
+      sp.rotation.z = a - Math.PI / 2;
+      grp.add(sp);
+    }
+    const proj = new Projectile(this.game, {
+      x: player.position.x + ax * 0.6, y: player.position.y + 0.7 + ay * 0.3,
+      vx: ax * 22 + player.body.velocity.x * 0.4,
+      vy: ay * 22 + 3,
+      damage: 0, owner: player,
+      gravity: true, life: 4, radius: 0.16,
+      explosive: true, sticky: true, stickLife: fuse,
+      mesh: grp, color: 0x66cc44,
+      explodeRadius: 3.6, explodeDamage: 55,
+    });
+    // Pulse emissive faster as fuse burns down.
+    const origUpdate = proj.update.bind(proj);
+    let lastBeep = 0;
+    proj.update = (dt) => {
+      if (!proj.dead && proj.stuck) {
+        const t = 1 - Math.max(0, proj.life / fuse);
+        const k = 0.5 + 0.5 * Math.sin(performance.now() * 0.001 * (4 + t * 30) * Math.PI * 2);
+        bodyMat.emissive.setRGB(k * 0.2, k * (0.6 + t * 0.4), 0);
+        bodyMat.emissiveIntensity = 0.4 + t * 1.8;
+        const interval = Math.max(60, 280 - t * 240);
+        if (performance.now() - lastBeep > interval) {
+          lastBeep = performance.now();
+          audio.beep(680 + t * 600, 0.04, 'square', 0.2);
+        }
+      }
+      origUpdate(dt);
+    };
+    audio.click();
   }
 }
 
@@ -1614,6 +1967,7 @@ export const WEAPON_CLASSES = [
   Sword, Bat, Pistol, Shotgun, Minigun, Bow, Grenade, RPG, RubberChicken, Boomerang, FishSlap,
   FlameSword, IceSword, Kamehameha, Nuke, LightningStaff, Lightsaber,
   Longsword, Mace, WarHammer, Halberd,
+  SniperRifle, ThrowingKnives, StickyBomb,
 ];
 export const PICKUP_CLASSES = [
   HealthPack, ArmorPlate, SpeedBoost, Shield,
@@ -1633,12 +1987,15 @@ export const SPAWN_TABLE = [
   { cls: WarHammer,     w: 6,   id: 'warhammer',    label: 'War Hammer',    cat: 'melee' },
   { cls: Halberd,       w: 8,   id: 'halberd',      label: 'Halberd',       cat: 'melee' },
   // ranged
-  { cls: Pistol,        w: 16,  id: 'pistol',       label: 'Pistol',        cat: 'ranged' },
-  { cls: Shotgun,       w: 10,  id: 'shotgun',      label: 'Shotgun',       cat: 'ranged' },
-  { cls: Minigun,       w: 6,   id: 'minigun',      label: 'Minigun',       cat: 'ranged' },
+  { cls: Pistol,        w: 14,  id: 'pistol',       label: 'Pistol',        cat: 'ranged' },
+  { cls: Shotgun,       w: 9,   id: 'shotgun',      label: 'Shotgun',       cat: 'ranged' },
+  { cls: Minigun,       w: 5,   id: 'minigun',      label: 'Minigun',       cat: 'ranged' },
   { cls: Bow,           w: 8,   id: 'bow',          label: 'Bow',           cat: 'ranged' },
   { cls: Grenade,       w: 8,   id: 'grenade',      label: 'Grenade',       cat: 'ranged' },
   { cls: RPG,           w: 4,   id: 'rpg',          label: 'RPG',           cat: 'ranged' },
+  { cls: SniperRifle,   w: 4,   id: 'sniper',       label: 'Sniper Rifle',  cat: 'ranged' },
+  { cls: ThrowingKnives,w: 6,   id: 'knives',       label: 'Throwing Knives', cat: 'ranged' },
+  { cls: StickyBomb,    w: 4,   id: 'sticky',       label: 'Sticky Bomb',   cat: 'ranged' },
   // joke
   { cls: RubberChicken, w: 2,   id: 'chicken',      label: 'Rubber Chicken',cat: 'joke' },
   { cls: Boomerang,     w: 5,   id: 'boomerang',    label: 'Boomerang',     cat: 'joke' },
