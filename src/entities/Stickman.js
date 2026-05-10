@@ -922,18 +922,21 @@ export class Stickman {
 
   // Find the planet whose pull on this body is strongest right now. Returns
   // null if nothing is exerting meaningful gravity (deep space).
+  // Pick the player's currently-influencing planet. Must match the model
+  // used by PlanetGravity.js: inverse-LINEAR field (a = G*M/r), single
+  // dominant by closest center within halo. The two have to agree or the
+  // body rotation (driven by this lookup) and the gravity force (driven by
+  // PlanetGravity's lookup) target different planets and the rig snaps.
   _currentPlanet() {
     const planets = this.game?.level?.planets;
     if (!planets || !planets.length) return null;
-    let best = null, bestA = 0.5;          // require at least 0.5 m/s² to claim
-    const G = 1.5;
+    let best = null, bestD2 = Infinity;
     for (const p of planets) {
       const dx = p.cx - this.body.position.x;
       const dy = p.cy - this.body.position.y;
-      const r2 = dx * dx + dy * dy;
-      if (r2 > p.haloRadius * p.haloRadius) continue;
-      const a = G * p.mass / Math.max(0.04, r2);
-      if (a > bestA) { bestA = a; best = p; }
+      const d2 = dx * dx + dy * dy;
+      if (d2 > p.haloRadius * p.haloRadius) continue;
+      if (d2 < bestD2) { bestD2 = d2; best = p; }
     }
     return best;
   }
@@ -1018,7 +1021,9 @@ export class Stickman {
         // by the input layer; coyote + air-jump rules are the same as flat.
         const now = this.input;
         const wantJump = now.jumpPressed && performance.now() >= (this._jumpInputCooldown || 0);
-        const jumpSpeed = 11;
+        // jumpSpeed tuned for ~12 m/s² surface gravity (Outer Wilds inverse-linear
+        // model). Height = v²/(2g) = 64/24 ≈ 2.7m — about half a planet radius.
+        const jumpSpeed = 8;
         if (wantJump) {
           if (this.grounded || this.coyote > 0) {
             // Replace radial component with jumpSpeed outward; preserve tangential.
