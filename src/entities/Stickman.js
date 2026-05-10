@@ -33,6 +33,7 @@ export class Stickman {
     this.team = opts.team ?? 0;
     this.isLocal = opts.isLocal ?? false;
     this.isBot = opts.isBot ?? false;
+    this.inputSource = opts.inputSource ?? null;  // {kind:'kb-mouse'} | {kind:'gamepad', gamepadIdx:N} | null (bot/net)
 
     // Physics: capsule = sphere + cylinder + sphere via two spheres + box (cheap & robust)
     const body = new CANNON.Body({
@@ -309,8 +310,9 @@ export class Stickman {
       game.fx.camera.punch(punch);
       // Hit-stop on every meaningful hit, stronger on big damage.
       game.hitStop?.(clamp(amount / 80, 0.02, 0.1));
-      // Local-player red flash overlay
-      if (this.isLocal && game.hud) game.hud.damageFlash?.(amount);
+      // Red flash overlay — P1 only. Single full-screen overlay, can't represent
+      // four locals, so couch-MP P2/P3/P4 hits don't trigger it.
+      if (this === game.localPlayer && game.hud) game.hud.damageFlash?.(amount);
     }
 
     if (this.health <= 0) {

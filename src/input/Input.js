@@ -134,11 +134,85 @@ export class InputManager {
     return out;
   }
 
-  // True for one frame on Start/Back press.
+  // Strict-by-index gamepad poll. Used by local MP where P2/P3/P4 must each
+  // bind to one specific pad. Unlike getGamepadSnapshot(), this returns an
+  // empty snapshot if that exact slot is null/disconnected � never bleeds
+  // input from another pad into a different player.
+  getGamepadSnapshotByIndex(idx) {
+    const out = { moveX: 0, moveY: 0, jump: false, attack: false, grab: false, special: false, throw: false, aimX: 1, aimY: 0, aimActive: false };
+    const gps = navigator.getGamepads?.() || [];
+    const gp = gps[idx];
+    if (!gp || !gp.connected) return out;
+    const dz = (v) => Math.abs(v) < 0.2 ? 0 : v;
+    const btn = (i) => !!gp.buttons[i]?.pressed;
+    const axis = (i) => gp.axes[i] ?? 0;
+    const trig = (i) => Math.max(0, gp.buttons[i]?.value ?? 0);
+
+    let mx = dz(axis(0));
+    let my = -dz(axis(1));
+    if (btn(14)) mx = -1;
+    if (btn(15)) mx = 1;
+    if (btn(12)) my = 1;
+    if (btn(13)) my = -1;
+    out.moveX = mx;
+    out.moveY = my;
+
+    const ax = dz(axis(2)), ay = -dz(axis(3));
+    if (Math.hypot(ax, ay) > 0.35) {
+      out.aimX = ax; out.aimY = ay; out.aimActive = true;
+    }
+
+    out.jump = btn(0);
+    out.attack = btn(5) || trig(7) > 0.35;
+    out.grab   = btn(2) || btn(4) || trig(6) > 0.35;
+    out.throw  = btn(1);
+    out.special = btn(3);
+    return out;
+  }
+
+  // Returns an input snapshot for any local source descriptor.
+  // Used by the per-local-player input loop.
+  //   'kb-mouse' → keyboard + mouse + touch + any-gamepad merged. For solo
+  //                play where the user might be on any device.
+  //   'kb-only'  → keyboard + mouse + touch ONLY, no gamepad merge. Used by
+  //                P1 in local-MP so a pad bound to P2/P3 can't bleed input
+  //                into P1 via getCombined's any-pad fallback.
+  //   'gamepad'  → strict-by-index pad poll for P2/P3/P4.
+  getSnapshotFor(source) {
+    if (!source) return null;
+    if (source.kind === 'kb-mouse') return this.getCombined();
+    if (source.kind === 'kb-only') return this.getKbMouseTouch();
+    if (source.kind === 'gamepad') return this.getGamepadSnapshotByIndex(source.gamepadIdx);
+    return null;
+  }
+
+  // Combined keyboard + mouse + touch, no gamepad. P1 in local-MP uses this
+  // so external pads only drive their assigned slot.
+  getKbMouseTouch() {
+    const a = this.getKbSnapshot();
+    const t = this.touch.active ? this.getTouchSnapshot() : null;
+    const o = { ...a };
+    o.moveX = a.moveX || (t?.moveX ?? 0);
+    o.moveY = a.moveY || (t?.moveY ?? 0);
+    o.jump = a.jump || (t?.jump ?? false);
+    o.attack = a.attack || (t?.attack ?? false);
+    o.grab = a.grab || (t?.grab ?? false);
+    o.special = a.special || (t?.special ?? false);
+    o.throw = a.throw || (t?.throw ?? false);
+    if (t?.aimActive) { o.aimX = t.aimX; o.aimY = t.aimY; o.aimActive = true; }
+    else { o.aimX = a.aimX; o.aimY = a.aimY; o.aimActive = false; }
+    return o;
+  }
+
+  // True for one frame on Start/Back press from ANY connected gamepad.
+  // Local-MP: any local player's Start triggers pause.
   consumeGamepadPause() {
-    const gp = navigator.getGamepads?.()?.[this.gamepadIdx];
-    if (!gp) return false;
-    const pressed = !!gp.buttons[9]?.pressed || !!gp.buttons[8]?.pressed;
+    const gps = navigator.getGamepads?.() || [];
+    let pressed = false;
+    for (const gp of gps) {
+      if (!gp || !gp.connected) continue;
+      if (gp.buttons[8]?.pressed || gp.buttons[9]?.pressed) { pressed = true; break; }
+    }
     if (pressed && !this._pausePrev) { this._pausePrev = true; return true; }
     if (!pressed) this._pausePrev = false;
     return false;
