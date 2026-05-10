@@ -1,27 +1,26 @@
 import * as CANNON from 'cannon-es';
 
-// Mario Galaxy-style gravity zones:
-//   - Each planet exerts CONSTANT magnitude inside its halo, zero outside.
-//   - SINGLE dominant planet at a time per body — no inter-planet sum.
-//     Picking by closest center (smallest r) since constant magnitude makes
-//     the field strength irrelevant for selection.
-//   - GROUNDED players get a magnet bonus (1.3× pull) so micro-bumps from
-//     wedge / sphere contact don't accumulate into orbital escape.
+// Outer Wilds-style gravity zones:
+//   - INVERSE-LINEAR pull: a = G * mass / r. Firmer at surface than constant
+//     magnitude, doesn't spike like 1/r², and naturally tapers toward the
+//     halo edge for smooth re-capture of drifting bodies.
+//   - SINGLE dominant planet at a time per body. Picked by closest center
+//     so dense small planets keep their grip in halo overlaps.
+//   - GROUNDED players get a 1.3× stick bonus so micro-bumps from sphere
+//     contact don't accumulate into orbital escape.
 //
-// Constant-magnitude gravity is what makes MG planets feel predictable.
-// Inverse-square felt nice on paper but spikes inside the core and
-// undershoots near the halo edge — neither helps arcade combat.
+// Tuning per planet via the level config's `mass` field. With G = 1.0,
+// surface gravity = mass / radius. So a r=5 planet needing surface a=12
+// uses mass=60. Small asteroids can run hotter (higher mass relative to
+// radius) without becoming overpowering at distance because the linear
+// falloff bleeds the pull.
 
 export function makePlanetGravity(level, game) {
-  const SURFACE_G = 8;        // m/s² baseline pull inside any halo
-  const STICK_BONUS = 1.3;    // grounded multiplier for magnet effect
+  const G = 1.0;             // global tuning constant
+  const STICK_BONUS = 1.3;   // grounded multiplier (magnet effect)
   return function applyPlanetGravity() {
     const planets = level.planets;
     if (!planets.length) return;
-    // Pick the SINGLE dominant planet for this body. With constant
-    // magnitude, the choice that matters is "which zone owns me right
-    // now." Use closest center; tie-break by smallest radius so denser
-    // zones win in overlap.
     const pickPlanet = (px, py) => {
       let best = null, bestD2 = Infinity;
       for (const p of planets) {
@@ -39,13 +38,11 @@ export function makePlanetGravity(level, game) {
       const dx = planet.cx - body.position.x;
       const dy = planet.cy - body.position.y;
       const r = Math.hypot(dx, dy);
-      if (r < 0.05) return;             // sitting on the singularity
-      // Constant magnitude pull. Flat, predictable, MG-style.
-      let aMag = SURFACE_G;
+      if (r < 0.05) return;          // singularity guard
+      // Inverse-linear: a = G * mass / r. No 1/r² blow-up.
+      let aMag = (G * (planet.mass ?? 60)) / r;
       if (isPlayer && body.userData?.stickman?.grounded) aMag *= STICK_BONUS;
       const ux = dx / r, uy = dy / r;
-      // F = m * a in body.force. Shim's _stepOnce reads body.force AFTER
-      // preStep listeners run and applies via Rapier.addForce.
       body.force.x += body.mass * ux * aMag;
       body.force.y += body.mass * uy * aMag;
     };
