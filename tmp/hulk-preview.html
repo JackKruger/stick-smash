@@ -223,10 +223,14 @@ function makeStoneMaterials() {
 function buildPair(scene, posY, includeForearm) {
   const matsR = makeStoneMaterials();
   const matsL = makeStoneMaterials();
-  const right = buildAnatomicalStoneFist({ ...matsR, includeForearm });
+  // 1.4× — bigger than a normal stickman hand (rig handR r=0.13 ≈ Ø0.26),
+  // but still not the cartoon-mitt size of the original draft. Reads as
+  // "augmented gauntlet fist" rather than "boxing glove".
+  const SIZE = 1.4;
+  const right = buildAnatomicalStoneFist({ ...matsR, includeForearm, scale: SIZE });
   right.position.set(0.55, posY, 0);
   scene.add(right);
-  const left = buildAnatomicalStoneFist({ ...matsL, includeForearm });
+  const left = buildAnatomicalStoneFist({ ...matsL, includeForearm, scale: SIZE });
   left.position.set(-0.55, posY, 0);
   left.scale.x *= -1;
   scene.add(left);
