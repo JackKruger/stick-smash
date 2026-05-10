@@ -673,15 +673,15 @@ export class SniperRifle extends Weapon {
     this.mesh = grp;
   }
   _muzzleWorld(player) {
-    // Muzzle position in WORLD coords. Anchor to player.position.x/y (body
-    // center) plus a fixed shoulder-height offset and a short reach along the
-    // aim direction. Rig hand bones are local to rig.group, so reading their
-    // .position directly mixes local + world frames — using player.position
-    // dodges that ambiguity entirely.
-    const ax = player.aimDir.x, ay = player.aimDir.y;
-    const baseX = player.position.x;
-    const baseY = player.position.y + 0.65;          // shoulder height
-    return { x: baseX + ax * 1.1, y: baseY + ay * 1.1 };
+    // Muzzle position in WORLD coords. Anchored to the player's shoulder
+    // with a small forward-of-facing offset; the laser then fans out along
+    // aimDir from there. Decoupling the muzzle origin from the vertical
+    // aim component keeps it from sinking below the player's feet (and
+    // into the floor) when aiming straight down.
+    const facing = player.facing || 1;
+    const baseX = player.position.x + facing * 0.4;
+    const baseY = player.position.y + 0.55;
+    return { x: baseX, y: baseY };
   }
   _castShot(player, maxRange = 60) {
     // Two-ray approach because the cannon-shim Rapier raycast doesn't return
@@ -695,26 +695,34 @@ export class SniperRifle extends Weapon {
     const to = { x: mz.x + ax * maxRange, y: mz.y + ay * maxRange, z: 0 };
     const worldHit = this.game.physics.raycast(from, to, { mask: COL_GROUPS.WORLD | COL_GROUPS.PROP });
     // For player hits we'd ideally raycast PLAYER mask, but the shim still
-    // can't tell us *which* player. Cheaper: walk the players list and find
-    // the nearest one whose body the ray pierces.
+    // can't tell us *which* player. Cheaper: walk the players list and test
+    // the ray against each one's body cylinder + head sphere.
+    const projectOnto = (cx, cy) => {
+      const rx = cx - from.x, ry = cy - from.y;
+      const along = rx * ax + ry * ay;
+      if (along < 0 || along > maxRange) return null;
+      const px = from.x + ax * along, py = from.y + ay * along;
+      return { along, perp: Math.hypot(cx - px, cy - py) };
+    };
     let playerHit = null;
     let playerDist = Infinity;
+    let isHead = false;
     for (const target of this.game.players) {
       if (!target || !target.alive || target === player) continue;
-      const tx = target.position.x, ty = target.position.y + 0.6;
-      // Distance from the target's center to the infinite ray (perpendicular).
-      const rx = tx - from.x, ry = ty - from.y;
-      const along = rx * ax + ry * ay;            // projection onto ray dir
-      if (along < 0 || along > maxRange) continue;
-      const px = from.x + ax * along, py = from.y + ay * along;
-      const perp = Math.hypot(tx - px, ty - py);
-      if (perp > 0.55) continue;                  // body radius slack
-      if (along < playerDist) { playerDist = along; playerHit = target; }
+      const tx = target.position.x;
+      // Head sphere — tight radius, sits above shoulder. Hit here = headshot.
+      const headP = projectOnto(tx, target.position.y + 1.15);
+      // Body cylinder — wider slack, includes torso and lower legs.
+      const bodyP = projectOnto(tx, target.position.y + 0.55);
+      let along = Infinity, head = false;
+      if (headP && headP.perp <= 0.22) { along = headP.along; head = true; }
+      if (bodyP && bodyP.perp <= 0.55 && bodyP.along < along) { along = bodyP.along; head = false; }
+      if (along < playerDist) { playerDist = along; playerHit = target; isHead = head; }
     }
     const worldDist = worldHit ? worldHit.distance : Infinity;
     if (playerHit && playerDist < worldDist) {
       const hp = { x: from.x + ax * playerDist, y: from.y + ay * playerDist, z: 0 };
-      return { from: mz, to: hp, hit: { kind: 'player', target: playerHit, point: hp, distance: playerDist } };
+      return { from: mz, to: hp, hit: { kind: 'player', target: playerHit, isHead, point: hp, distance: playerDist } };
     }
     if (worldHit) {
       const hp = worldHit.hitPointWorld;
@@ -725,19 +733,15 @@ export class SniperRifle extends Weapon {
   worldTick(dt) {
     super.worldTick(dt);
     if (this._tracerTime > 0) this._tracerTime -= dt;
-    // Laser sight: only while held + aiming. Cleaned up in detach().
+    // Laser sight: always visible while held — gives the carrier (and
+    // their targets) a constant readout of where the shot will land.
+    // Hidden only when the weapon isn't held.
     if (!this.holder) {
-      if (this._laser) { this._laser.visible = false; }
-      if (this._laserDot) this._laserDot.visible = false;
-      return;
-    }
-    const player = this.holder;
-    const aiming = !!player.input?.aimActive;
-    if (!aiming) {
       if (this._laser) this._laser.visible = false;
       if (this._laserDot) this._laserDot.visible = false;
       return;
     }
+    const player = this.holder;
     const cast = this._castShot(player);
     if (!this._laser) {
       const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
@@ -756,9 +760,15 @@ export class SniperRifle extends Weapon {
     pos.setXYZ(1, cast.to.x, cast.to.y, 0);
     pos.needsUpdate = true;
     this._laserDot.position.set(cast.to.x, cast.to.y, 0);
-    // Tracer flash piggybacks on the laser line briefly after a shot.
-    this._laser.material.opacity = this._tracerTime > 0 ? 0.95 : 0.55;
-    const dotScale = 1 + (this._tracerTime > 0 ? 2 : 0);
+    // Color hints: brighter + slight pulse when the laser is on a player's
+    // head — a "you're locked" cue for both shooter and target.
+    const onHead = cast.hit?.kind === 'player' && cast.hit.isHead;
+    const onPlayer = cast.hit?.kind === 'player';
+    const baseOpacity = this._tracerTime > 0 ? 0.95 : (onHead ? 0.95 : 0.55);
+    this._laser.material.opacity = baseOpacity;
+    this._laser.material.color.setHex(onHead ? 0xff2244 : (onPlayer ? 0xff5566 : 0xff3344));
+    this._laserDot.material.color.setHex(onHead ? 0xff2244 : 0xff3344);
+    const dotScale = (this._tracerTime > 0 ? 3 : (onHead ? 1.6 + Math.sin(performance.now() * 0.018) * 0.3 : 1));
     this._laserDot.scale.setScalar(dotScale);
   }
   fire(player) {
@@ -778,11 +788,27 @@ export class SniperRifle extends Weapon {
       if (cast.hit.kind === 'player') {
         const sm = cast.hit.target;
         if (sm && sm !== player && sm.alive && sm.invuln <= 0) {
-          sm.takeDamage(85, {
-            attacker: player, weapon: 'sniper',
-            kb: { x: ax * 14, y: 6 + Math.abs(ay) * 4 }, stun: 0.4,
-          });
-          this.game.fx.particles.blood?.(hp.x, hp.y, 0, ax >= 0 ? 1 : -1, 0.8);
+          if (cast.hit.isHead) {
+            // Headshot — instant kill. Pass enough damage to clear any
+            // armor + max health so takeDamage drops the target regardless.
+            const overkill = (sm.maxHealth ?? 100) + (sm.maxArmor ?? 0) + 200;
+            sm.takeDamage(overkill, {
+              attacker: player, weapon: 'sniper-head',
+              kb: { x: ax * 18, y: 10 + Math.abs(ay) * 4 }, stun: 0.6,
+            });
+            this.game.fx.particles.blood?.(hp.x, hp.y, 0, ax >= 0 ? 1 : -1, 1.4);
+            this.game.fx.particles.burst(hp.x, hp.y, 0, { count: 32, speed: 14, color: 0xff2244 });
+            this.game.fx.camera.punch(0.85);
+            this.game.hitStop?.(0.14);
+            audio.beep?.(140, 0.22, 'sawtooth', 0.5);
+            this.game.hud?.showCenter?.('HEADSHOT', '', 900);
+          } else {
+            sm.takeDamage(85, {
+              attacker: player, weapon: 'sniper',
+              kb: { x: ax * 14, y: 6 + Math.abs(ay) * 4 }, stun: 0.4,
+            });
+            this.game.fx.particles.blood?.(hp.x, hp.y, 0, ax >= 0 ? 1 : -1, 0.8);
+          }
         }
       }
       // Tile damage: shim raycast doesn't return the hit body, so we damage
