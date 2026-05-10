@@ -1266,38 +1266,42 @@ export const LEVELS = [
       // Top sanctum y=20 (durable prize platform).
       ...row(20, -5, 5, { material: 'stone', hp: 80, color: 0x6a7a68 }),
       // ---- Crystal spire centerpiece. Tilted shards form a faceted
-      // cluster silhouette. Each shard is its own tile with HP.
-      // Tile y is the CENTER of the box; spec heights are full shard heights
-      // with base at floor y=0, so y_center = h/2.
+      // cluster silhouette spanning nearly the full level height (mockup-
+      // matched). Each shard is its own tile with HP; stone material w/
+      // emissive glow. Wider (w 2-3x), 3x taller than original draft so the
+      // spire reads as a full-height landmark like the design mockup.
+      // Tile y is CENTER of the box; base sits on floor y=0, so y_center = h/2.
+      // GAMEPLAY NOTE: tip cyan reaches y=22 — slightly above the y=20 sanctum.
+      // The spire is now an alternate climb path to the top, in addition to
+      // the side platform ladder.
       // KNOWN LIMITATION: shards with fractional y bypass the integer-grid
       // damageArea lookup, so explosion splash (grenade/RPG) only reaches
-      // the right-magenta shard (y=2.0). Single-target attacks (bullets,
-      // melee, throws) hit every shard via Cannon collision callbacks.
-      // Acceptable: spire reads thematically as splash-resistant crystal.
-      // Back magenta — durable, tilted -6°.
-      { x: -2, y: 2.5, shape: 'box', w: 1.0, h: 5.0, d: 1.0,
-        material: 'stone', hp: 80, rotZ: -0.105,
+      // shards whose y happens to land on an integer. Single-target attacks
+      // (bullets, melee, throws) hit every shard via Cannon collision callbacks.
+      // Back magenta — durable, tilted -6°. h=15.
+      { x: -3, y: 7.5, shape: 'box', w: 2.4, h: 15.0, d: 2.0,
+        material: 'stone', hp: 120, rotZ: -0.105,
         color: 0xb060d0, emissive: 0xb060d0, emissiveIntensity: 0.7 },
-      // Main cyan — durable, vertical, tallest.
-      { x: 0, y: 3.25, shape: 'box', w: 1.4, h: 6.5, d: 1.2,
-        material: 'stone', hp: 80,
+      // Main cyan — durable, vertical, tallest. h=18 → tip y=18.
+      { x: 0, y: 9.0, shape: 'box', w: 3.0, h: 18.0, d: 2.4,
+        material: 'stone', hp: 140,
         color: 0x5ec8e8, emissive: 0x5ec8e8, emissiveIntensity: 0.8 },
-      // Right magenta — durable, tilted +8°.
-      { x: 2, y: 2.0, shape: 'box', w: 0.9, h: 4.0, d: 0.9,
-        material: 'stone', hp: 80, rotZ: 0.140,
+      // Right magenta — durable, tilted +8°. h=12.
+      { x: 3, y: 6.0, shape: 'box', w: 2.0, h: 12.0, d: 1.8,
+        material: 'stone', hp: 110, rotZ: 0.140,
         color: 0xb060d0, emissive: 0xb060d0, emissiveIntensity: 0.7 },
-      // Front cyan small — brittle, tilted +4°.
-      { x: -1, y: 1.25, shape: 'box', w: 0.7, h: 2.5, d: 0.7,
-        material: 'stone', hp: 25, rotZ: 0.070,
-        color: 0x80c8e0, emissive: 0x80c8e0, emissiveIntensity: 0.6 },
-      // Tip cyan — brittle, glows brightest, sits atop main cyan.
-      { x: 0, y: 6.5, shape: 'box', w: 0.6, h: 2.0, d: 0.6,
-        material: 'stone', hp: 25,
-        color: 0xc8f4ff, emissive: 0xc8f4ff, emissiveIntensity: 1.0 },
+      // Front cyan small — brittle, tilted +4°. h=8.
+      { x: -1, y: 4.0, shape: 'box', w: 1.4, h: 8.0, d: 1.2,
+        material: 'stone', hp: 50, rotZ: 0.070,
+        color: 0x80c8e0, emissive: 0x80c8e0, emissiveIntensity: 0.7 },
+      // Tip cyan — brightest glow, base y=18 (top of main cyan), top y=22.
+      { x: 0, y: 20.0, shape: 'box', w: 1.4, h: 4.0, d: 1.2,
+        material: 'stone', hp: 35,
+        color: 0xc8f4ff, emissive: 0xc8f4ff, emissiveIntensity: 1.2 },
       // Yellow accent nub — short, brittle, breaks for spectacle.
-      { x: 1, y: 0.5, shape: 'box', w: 0.5, h: 1.0, d: 0.5,
-        material: 'stone', hp: 25,
-        color: 0xe8c440, emissive: 0xe8c440, emissiveIntensity: 0.8 },
+      { x: 1, y: 1.0, shape: 'box', w: 1.0, h: 2.0, d: 0.8,
+        material: 'stone', hp: 30,
+        color: 0xe8c440, emissive: 0xe8c440, emissiveIntensity: 0.9 },
     ],
     hazards: [
       // Kill plane.
@@ -1345,12 +1349,42 @@ export const LEVELS = [
       bg( 17, 6,  3, 22, 0x121c24, -12),
       bg( 22, 8,  4, 28, 0x162028, -12),
 
-      // ---- Wall vein glow strips (z=-10). Cyan left, magenta right. ----
+      // ---- Cave shell — organic rock silhouettes flanking each wall (z=-11). ----
+      // Stacked spheres of varying size to suggest curved cave wall recede.
+      bgSphere(-15, 0,  2.0, 0x162028, -11),
+      bgSphere(-15, 4,  1.7, 0x1a2632, -11),
+      bgSphere(-16, 8,  2.2, 0x121c24, -11),
+      bgSphere(-15, 12, 1.6, 0x162028, -11),
+      bgSphere(-16, 16, 2.0, 0x1a2632, -11),
+      bgSphere(-15, 20, 1.8, 0x121c24, -11),
+      bgSphere( 15, 0,  2.0, 0x162028, -11),
+      bgSphere( 15, 4,  1.7, 0x1a2632, -11),
+      bgSphere( 16, 8,  2.2, 0x121c24, -11),
+      bgSphere( 15, 12, 1.6, 0x162028, -11),
+      bgSphere( 16, 16, 2.0, 0x1a2632, -11),
+      bgSphere( 15, 20, 1.8, 0x121c24, -11),
+
+      // ---- Stalactite teeth at ceiling (z=-10). Stretched dark spheres
+      // hanging from y=24 — they read as drips/teeth poking down. ----
+      bgSphere(-10, 23, 0.5, 0x2a3640, -10),
+      bgSphere(-7,  23, 0.6, 0x2a3640, -10),
+      bgSphere(-4,  23, 0.5, 0x2a3640, -10),
+      bgSphere( 0,  23, 0.7, 0x2a3640, -10),
+      bgSphere( 4,  23, 0.5, 0x2a3640, -10),
+      bgSphere( 7,  23, 0.6, 0x2a3640, -10),
+      bgSphere( 10, 23, 0.5, 0x2a3640, -10),
+
+      // ---- Wall vein glow strips (z=-10). Cyan left, magenta right.
+      // Doubled count + offset x for a snaking vein read. ----
       bgGlow(-12, 4,  0.4, 5, 0x5ee0ff, -10),
+      bgGlow(-11.4, 8,  0.3, 3, 0x5ee0ff, -10),
       bgGlow(-12, 12, 0.4, 5, 0x5ee0ff, -10),
+      bgGlow(-11.6, 16, 0.3, 2.5, 0x5ee0ff, -10),
       bgGlow(-12, 19, 0.4, 4, 0x5ee0ff, -10),
       bgGlow( 12, 4,  0.4, 5, 0xd878ff, -10),
+      bgGlow( 11.4, 8,  0.3, 3, 0xd878ff, -10),
       bgGlow( 12, 12, 0.4, 5, 0xd878ff, -10),
+      bgGlow( 11.6, 16, 0.3, 2.5, 0xd878ff, -10),
       bgGlow( 12, 19, 0.4, 4, 0xd878ff, -10),
 
       // ---- Bioluminescent mushroom dots scattered on bg (z=-9). ----
@@ -1365,8 +1399,43 @@ export const LEVELS = [
       bgDisc(-7,  16, 0.18, 0xffd070, -9, { emissiveIntensity: 1.0 }),
       bgDisc( 7,  16, 0.18, 0x5ee0ff, -9, { emissiveIntensity: 1.2 }),
 
-      // ---- Cyan ambient halo behind the spire (z=-9.5). ----
-      bgDisc(0, 4, 4.0, 0x5ee0ff, -9.5, { emissiveIntensity: 0.5 }),
+      // ---- Cyan ambient halo behind the spire (z=-9.5). Larger to match
+      // the now full-height spire centerpiece. ----
+      bgDisc(0, 10, 8.0, 0x5ee0ff, -9.5, { emissiveIntensity: 0.5 }),
+
+      // ---- Foreground glowing mushrooms on platform tops (z=-1). Small
+      // emissive discs sitting just above platform tiles — visual moss/fungi
+      // accents matching the mockup. ----
+      // Floor (y=0 → discs at y=0.6).
+      bgDisc(-9, 0.6, 0.18, 0x5ee0ff, -1, { emissiveIntensity: 1.6 }),
+      bgDisc(-7, 0.6, 0.14, 0xffd070, -1, { emissiveIntensity: 1.4 }),
+      bgDisc(-5, 0.6, 0.16, 0xd878ff, -1, { emissiveIntensity: 1.5 }),
+      bgDisc( 5, 0.6, 0.16, 0x5ee0ff, -1, { emissiveIntensity: 1.6 }),
+      bgDisc( 7, 0.6, 0.14, 0xffd070, -1, { emissiveIntensity: 1.4 }),
+      bgDisc( 9, 0.6, 0.18, 0xd878ff, -1, { emissiveIntensity: 1.5 }),
+      // Tier y=3 stone platforms.
+      bgDisc(-9, 3.6, 0.14, 0xffd070, -1, { emissiveIntensity: 1.4 }),
+      bgDisc( 9, 3.6, 0.14, 0x5ee0ff, -1, { emissiveIntensity: 1.4 }),
+      // Tier y=9 stone left.
+      bgDisc(-9, 9.6, 0.14, 0xd878ff, -1, { emissiveIntensity: 1.4 }),
+      // Tier y=13 stone left.
+      bgDisc(-9, 13.6, 0.14, 0x5ee0ff, -1, { emissiveIntensity: 1.4 }),
+      // Tier y=17 stone left.
+      bgDisc(-7, 17.6, 0.14, 0xffd070, -1, { emissiveIntensity: 1.4 }),
+      // Top sanctum (y=20).
+      bgDisc(-3, 20.7, 0.18, 0x5ee0ff, -1, { emissiveIntensity: 1.6 }),
+      bgDisc( 0, 20.7, 0.14, 0xffd070, -1, { emissiveIntensity: 1.4 }),
+      bgDisc( 3, 20.7, 0.18, 0xd878ff, -1, { emissiveIntensity: 1.6 }),
+
+      // ---- Mossy strip along floor + each stone tier top (z=-0.8). Thin
+      // emissive-green band on top edge of stone platforms. ----
+      bgGlow(0,  0.55, 24, 0.1, 0x3a8060, -0.8),
+      bgGlow(-9, 3.55, 5,  0.08, 0x3a8060, -0.8),
+      bgGlow( 9, 3.55, 5,  0.08, 0x3a8060, -0.8),
+      bgGlow(-9, 9.55, 5,  0.08, 0x3a8060, -0.8),
+      bgGlow(-9, 13.55, 4, 0.08, 0x3a8060, -0.8),
+      bgGlow(-7, 17.55, 4, 0.08, 0x3a8060, -0.8),
+      bgGlow(0,  20.6, 11, 0.1, 0x3a8060, -0.8),
 
       // ---- Foreground mist patches (z=-8). Low-alpha cyan ovals. ----
       bg(0, 0,  20, 0.6, 0x1a3848, -8),
