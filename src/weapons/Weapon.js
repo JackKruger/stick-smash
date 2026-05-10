@@ -228,6 +228,8 @@ export class Weapon {
     if (this.game?.projectiles) {
       for (const pr of this.game.projectiles) {
         if (pr.dead) continue;
+        // Stuck projectiles have no body — they're decorative at this point.
+        if (!pr.body || pr.stuck) continue;
         if (pr.owner === this.holder) continue;
         const dx = pr.body.position.x - cx;
         const dy = pr.body.position.y - cy;

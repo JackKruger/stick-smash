@@ -41,6 +41,11 @@ export class PhysicsWorld {
       prop:   mkMat('prop',   0.4, 0.1),
       slick:  mkMat('slick',  0.02),
       bouncy: mkMat('bouncy', 0.3, 1.4),
+      // Grenade-like projectiles. Restitution 0.55 + Rapier MAX combine rule
+      // means bombs bounce on any surface even if the surface itself has 0
+      // restitution (stone tiles, ground). Friction is moderate so they slow
+      // and roll instead of skating forever.
+      grenade: mkMat('grenade', 0.45, 0.55),
     };
 
     this.bodies = new Set();
