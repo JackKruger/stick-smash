@@ -241,6 +241,29 @@ export class Weapon {
       }
     }
     this._damageChainsInArc(cx, cy, radius, this.chainSwingDmg ?? 14);
+    this._damageTilesInArc(cx, cy, radius, this.tileSwingDmg ?? 0);
+  }
+
+  // Per-swing tile damage. Iterates every tile (static + dynamic) by body
+  // position so rotated / fractional-grid tiles (e.g. crystal spire shards)
+  // are reachable. Per-swing dedupe reuses `this.hits` with a `tile_<key>`
+  // namespace. No-op when tileSwingDmg is 0 (non-melee or opt-out weapons).
+  _damageTilesInArc(cx, cy, radius, dmg) {
+    if (!dmg) return;
+    const lvl = this.game?.level;
+    if (!lvl?.tiles) return;
+    const r2 = radius * radius;
+    const hitSet = this.hits ?? new Set();
+    for (const t of lvl.tiles.values()) {
+      if (!t.body || t.indestructible) continue;
+      const key = `tile_${t._key}`;
+      if (hitSet.has(key)) continue;
+      const dx = t.body.position.x - cx;
+      const dy = t.body.position.y - cy;
+      if (dx * dx + dy * dy > r2) continue;
+      hitSet.add(key);
+      lvl.damageTile(t, dmg, this.holder);
+    }
   }
 
   _damageChainsInArc(cx, cy, radius, dmg) {
