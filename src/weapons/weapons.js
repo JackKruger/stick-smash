@@ -18,6 +18,7 @@ export class Sword extends Weapon {
     this.aimWeapon = false;
     this.swingTimer = 0;
     this.hits = new Set();
+    this.tileSwingDmg = 12;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -74,6 +75,7 @@ export class Bat extends Weapon {
     this.fireDelay = 0.45;
     this.swingTimer = 0;
     this.hits = new Set();
+    this.tileSwingDmg = 10;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -128,6 +130,7 @@ export class Longsword extends Weapon {
     this.fireDelay = 0.36;
     this.swingTimer = 0;
     this.hits = new Set();
+    this.tileSwingDmg = 18;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -186,6 +189,7 @@ export class Mace extends Weapon {
     this.fireDelay = 0.5;
     this.swingTimer = 0;
     this.hits = new Set();
+    this.tileSwingDmg = 16;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -248,6 +252,7 @@ export class WarHammer extends Weapon {
     this.fireDelay = 0.65;
     this.swingTimer = 0;
     this.hits = new Set();
+    this.tileSwingDmg = 25;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -307,6 +312,7 @@ export class Halberd extends Weapon {
     this.fireDelay = 0.45;
     this.swingTimer = 0;
     this.hits = new Set();
+    this.tileSwingDmg = 16;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -582,6 +588,7 @@ export class RubberChicken extends Weapon {
     this.fireDelay = 0.5;
     this.swingTimer = 0;
     this.hits = new Set();
+    this.tileSwingDmg = 5;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -670,6 +677,7 @@ export class FishSlap extends Weapon {
     this.fireDelay = 0.35;
     this.swingTimer = 0;
     this.hits = new Set();
+    this.tileSwingDmg = 6;
   }
   _buildMesh() {
     const g = new THREE.SphereGeometry(0.18, 10, 8);
@@ -870,6 +878,7 @@ export class Lightsaber extends Weapon {
     this.fireDelay = 0.22;
     this.swingTimer = 0;
     this.hits = new Set();
+    this.tileSwingDmg = 22;
     this.bladeColor = SABER_COLORS[Math.floor(Math.random() * SABER_COLORS.length)];
     if (this._blade) this._blade.material.color.setHex(this.bladeColor);
     if (this._blade) this._blade.material.emissive.setHex(this.bladeColor);
@@ -991,6 +1000,7 @@ export class FlameSword extends Weapon {
     this.fireDelay = 0.3;
     this.swingTimer = 0;
     this.hits = new Set();
+    this.tileSwingDmg = 20;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -1064,6 +1074,7 @@ export class IceSword extends Weapon {
     this.fireDelay = 0.3;
     this.swingTimer = 0;
     this.hits = new Set();
+    this.tileSwingDmg = 20;
   }
   _buildMesh() {
     const grp = new THREE.Group();
