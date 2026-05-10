@@ -11,6 +11,10 @@ import { audio } from '../audio/Audio.js';
 const BODY_RADIUS = 0.32;
 const BODY_HEIGHT = 1.5;
 
+// Reused Z-axis vec for visual rig rotation on curved-gravity levels — keeps
+// us from allocating a Vector3 per stickman per frame.
+const _RIG_Z_AXIS = new THREE.Vector3(0, 0, 1);
+
 export const STATE = {
   ACTIVE: 'active',
   GRABBED: 'grabbed',
@@ -36,7 +40,12 @@ export class Stickman {
       material: world.materials.player,
       linearDamping: 0.12,
       angularDamping: 0.99,
-      fixedRotation: !(opts.game?.level?.curvedGravity),
+      // Keep capsule physics rotation locked even on curved-gravity levels.
+      // Rotating the 2-sphere capsule through Rapier moves the subshape
+      // centers each tick, invalidating contact pairs and producing
+      // velocity spikes ("flings"). The body stays upright in the sim;
+      // the visual rig is rotated separately via _syncRig + _visualAngle.
+      fixedRotation: true,
       allowSleep: false,  // direct velocity writes won't wake a sleeping body
       collisionFilterGroup: COL_GROUPS.PLAYER,
       collisionFilterMask: COL_GROUPS.WORLD | COL_GROUPS.PROP | COL_GROUPS.WEAPON | COL_GROUPS.HAZARD | COL_GROUPS.PLAYER | COL_GROUPS.PROJECTILE,
@@ -352,7 +361,8 @@ export class Stickman {
     this.body.angularVelocity.setZero();
     this.body.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 0, 1), 0);
     this.body.collisionFilterMask = COL_GROUPS.WORLD | COL_GROUPS.PROP | COL_GROUPS.WEAPON | COL_GROUPS.HAZARD | COL_GROUPS.PLAYER | COL_GROUPS.PROJECTILE;
-    this.body.fixedRotation = !(this.game?.level?.curvedGravity);
+    this.body.fixedRotation = true;     // capsule physics always upright; rig rotates separately
+    this._visualAngle = 0;              // reset rig rotation on respawn
     this.body.linearDamping = 0.12;
     this.body.angularDamping = 0.99;
     this.body.updateMassProperties();
@@ -1309,6 +1319,11 @@ export class Stickman {
   // settles back toward world up. Z-axis lock in PhysicsWorld.postStep
   // keeps rotation strictly in-plane (no pitch/yaw).
   _updateBodyRotation(dt) {
+    // Visual-only rotation. The physics body stays upright (fixedRotation=true);
+    // we just slerp `_visualAngle` toward the planet-up angle and use it in
+    // _syncRig to orient the rig group. Decoupling visual from physics
+    // eliminates the capsule-subshape contact instability that caused
+    // "flinging" on curved planets.
     const planet = this._currentPlanetRef;
     let targetAngle = 0;
     if (planet) {
@@ -1316,22 +1331,13 @@ export class Stickman {
       const dy = this.body.position.y - planet.cy;
       targetAngle = Math.atan2(dy, dx) - Math.PI / 2;
     }
-    // Read current Z rotation from the body quaternion.
-    const q = this.body.quaternion;
-    const curAngle = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
-    let delta = targetAngle - curAngle;
+    const cur = this._visualAngle ?? 0;
+    let delta = targetAngle - cur;
     while (delta > Math.PI) delta -= Math.PI * 2;
     while (delta < -Math.PI) delta += Math.PI * 2;
-    const rate = 8;           // rad/s — gentler so capsule doesn't whip the sphere collider
+    const rate = 8;
     const step = clamp(delta, -rate * dt, rate * dt);
-    const newAngle = curAngle + step;
-    this.body.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 0, 1), newAngle);
-    // Kill any angular velocity Rapier integrated. We own rotation explicitly
-    // via the slerp; if Rapier picks up spin from solver contacts we'd fight
-    // it, causing rig + capsule jitter that reads as "squishing."
-    this.body.angularVelocity.x = 0;
-    this.body.angularVelocity.y = 0;
-    this.body.angularVelocity.z = 0;
+    this._visualAngle = cur + step;
   }
 
   _syncRig(dt, ragdoll) {
@@ -1399,10 +1405,18 @@ export class Stickman {
 
     if (rigInLocal) {
       // Group carries body's transform; limbs are in local space.
-      const q = this.body.quaternion;
+      // For curved-gravity levels the physics body stays upright (locked
+      // rotation) — the visual angle comes from `_visualAngle` slerped
+      // toward planet-up in `_updateBodyRotation`. For ragdoll mode we
+      // use the actual body quaternion (Rapier integrates spin then).
       const p = this.body.position;
       this.rig.group.position.set(p.x, p.y, p.z);
-      this.rig.group.quaternion.set(q.x, q.y, q.z, q.w);
+      if (this.state === STATE.DEAD) {
+        const q = this.body.quaternion;
+        this.rig.group.quaternion.set(q.x, q.y, q.z, q.w);
+      } else {
+        this.rig.group.quaternion.setFromAxisAngle(_RIG_Z_AXIS, this._visualAngle ?? 0);
+      }
     } else {
       this.rig.group.quaternion.identity();
       this.rig.group.position.set(0, 0, 0);
