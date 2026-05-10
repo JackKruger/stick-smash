@@ -1,0 +1,208 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Hulk Hands — model preview</title>
+<style>
+  body { margin: 0; background: #0a0a14; color: #ddd; font-family: system-ui, sans-serif; }
+  .row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 8px; }
+  .cell { background: #11131a; border: 1px solid #222; border-radius: 6px; }
+  .cell h3 { margin: 8px 12px 0; font-size: 14px; }
+  .cell p  { margin: 4px 12px 8px; font-size: 12px; color: #999; }
+  canvas { display: block; width: 100%; height: 320px; }
+  .legend { padding: 6px 12px 12px; font-size: 12px; color: #aaa; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+<div class="row">
+  <div class="cell"><h3>A — Cartoony Oversized Fists</h3><p>green spheres + purple cuff + knuckle bumps</p><canvas id="a"></canvas></div>
+  <div class="cell"><h3>B — Cracked-Stone Fists</h3><p>boulder-y, displaced sphere + crack emissive</p><canvas id="b"></canvas></div>
+  <div class="cell"><h3>C — Gauntlet Pickup</h3><p>green-metal forearm gauntlets w/ knuckle dusters</p><canvas id="c"></canvas></div>
+</div>
+<div class="legend">
+  Both fists are shown roughly at the offsets they'd take in-game on a stickman rig (left + right wrist).<br>
+  Click+drag any panel to spin. Lighting matches the in-game scene (one warm key + cool fill + low ambient).
+</div>
+<script type="module">
+import * as THREE from 'three';
+
+function buildScene() {
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x12131a);
+  const key = new THREE.DirectionalLight(0xffe9c2, 1.2); key.position.set(2, 4, 3); scene.add(key);
+  const fill = new THREE.DirectionalLight(0x6688ff, 0.4); fill.position.set(-3, 2, 2); scene.add(fill);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.25));
+  // Simple stick figure for context.
+  const stickMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee });
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.18, 16, 12), stickMat); head.position.set(0, 1.0, 0); scene.add(head);
+  const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.6, 8), stickMat); torso.position.set(0, 0.5, 0); scene.add(torso);
+  const armL = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.5, 8), stickMat); armL.position.set(-0.32, 0.7, 0); armL.rotation.z = 0.5; scene.add(armL);
+  const armR = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.5, 8), stickMat); armR.position.set( 0.32, 0.7, 0); armR.rotation.z = -0.5; scene.add(armR);
+  return scene;
+}
+
+// === A: Cartoony Oversized Fists ============================================
+function buildHandA(isRight) {
+  const grp = new THREE.Group();
+  const skin = new THREE.MeshStandardMaterial({ color: 0x4cc54c, roughness: 0.5 });
+  const fist = new THREE.Mesh(new THREE.SphereGeometry(0.32, 22, 16), skin);
+  // squash slightly so it's fist-shaped, not ball
+  fist.scale.set(1.0, 0.95, 1.05);
+  grp.add(fist);
+  // 4 knuckle bumps
+  const knuckMat = new THREE.MeshStandardMaterial({ color: 0x88ee88, emissive: 0x227722, emissiveIntensity: 0.4 });
+  for (let i = 0; i < 4; i++) {
+    const k = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 10), knuckMat);
+    const ang = -0.7 + i * 0.42;
+    k.position.set(Math.cos(ang) * 0.30, Math.sin(ang) * 0.30, 0.18);
+    grp.add(k);
+  }
+  // Thumb
+  const thumb = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 10), skin);
+  thumb.position.set(0.18, -0.04, -0.18); thumb.scale.set(1, 1, 1.2);
+  grp.add(thumb);
+  // Purple cuff (Hulk shorts band)
+  const cuffMat = new THREE.MeshStandardMaterial({ color: 0x6633aa, roughness: 0.7 });
+  const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.18, 0.18, 16), cuffMat);
+  cuff.rotation.z = Math.PI / 2; cuff.position.x = -0.3;
+  grp.add(cuff);
+  // Torn fabric strips poking out of cuff
+  for (let i = 0; i < 5; i++) {
+    const tear = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.08, 0.02), cuffMat);
+    const a = i / 5 * Math.PI * 2;
+    tear.position.set(-0.36, Math.sin(a) * 0.2, Math.cos(a) * 0.2);
+    tear.rotation.z = a + 0.3;
+    grp.add(tear);
+  }
+  if (!isRight) grp.scale.x = -1;
+  return grp;
+}
+
+// === B: Cracked-Stone Fists =================================================
+function buildHandB(isRight) {
+  const grp = new THREE.Group();
+  // Lumpy fist via noise-displaced sphere.
+  const g = new THREE.SphereGeometry(0.34, 24, 18);
+  const pos = g.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const r = Math.hypot(x, y, z);
+    const n = Math.sin(x * 8) * Math.sin(y * 8) * Math.sin(z * 8) * 0.045;
+    pos.setXYZ(i, x + (x / r) * n, y + (y / r) * n, z + (z / r) * n);
+  }
+  g.computeVertexNormals();
+  const stoneMat = new THREE.MeshStandardMaterial({
+    color: 0x4f7048, emissive: 0x081008, emissiveIntensity: 0.3,
+    roughness: 0.95, metalness: 0.05,
+  });
+  const fist = new THREE.Mesh(g, stoneMat);
+  grp.add(fist);
+  // Glowing cracks — emissive thin boxes wrapped around.
+  const crackMat = new THREE.MeshBasicMaterial({ color: 0x88ff66 });
+  for (let i = 0; i < 7; i++) {
+    const c = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.012, 0.012), crackMat);
+    c.position.set(0, (i - 3) * 0.07, 0);
+    c.rotation.z = Math.sin(i) * 0.4;
+    c.rotation.y = i * 0.3;
+    grp.add(c);
+  }
+  // Wrist plate (metal bracer rim)
+  const platMat = new THREE.MeshStandardMaterial({ color: 0x707880, metalness: 0.7, roughness: 0.4 });
+  const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.20, 0.08, 18), platMat);
+  plate.rotation.z = Math.PI / 2; plate.position.x = -0.30;
+  grp.add(plate);
+  if (!isRight) grp.scale.x = -1;
+  return grp;
+}
+
+// === C: Gauntlet Pickup =====================================================
+function buildHandC(isRight) {
+  const grp = new THREE.Group();
+  const metalMat = new THREE.MeshStandardMaterial({ color: 0x2e7a40, metalness: 0.8, roughness: 0.25 });
+  const trimMat  = new THREE.MeshStandardMaterial({ color: 0xd6c060, metalness: 0.85, roughness: 0.3 });
+  const veinMat  = new THREE.MeshBasicMaterial({ color: 0x66ffaa });
+  // Forearm tube
+  const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.5, 14), metalMat);
+  arm.rotation.z = Math.PI / 2; arm.position.x = -0.15;
+  grp.add(arm);
+  // Trim ring
+  const ring1 = new THREE.Mesh(new THREE.TorusGeometry(0.13, 0.025, 8, 18), trimMat);
+  ring1.rotation.y = Math.PI / 2; ring1.position.x = -0.40;
+  const ring2 = ring1.clone(); ring2.position.x = 0.10;
+  grp.add(ring1, ring2);
+  // Glowing vein along forearm
+  const vein = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.02, 0.02), veinMat);
+  vein.position.set(-0.15, 0.10, 0);
+  grp.add(vein);
+  // Knuckle plate (boxy)
+  const knuck = new THREE.Mesh(new THREE.BoxGeometry(0.30, 0.22, 0.28), metalMat);
+  knuck.position.x = 0.28;
+  grp.add(knuck);
+  // Knuckle dusters (4 spikes)
+  for (let i = 0; i < 4; i++) {
+    const s = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.10, 4), trimMat);
+    s.rotation.x = Math.PI / 2;
+    s.position.set(0.40, 0.09 - i * 0.06, 0);
+    grp.add(s);
+  }
+  if (!isRight) grp.scale.x = -1;
+  return grp;
+}
+
+function mountFists(scene, factory) {
+  // Roughly the wrist offsets of a 2.5D stickman rig.
+  const left  = factory(false); left.position.set(-0.55, 0.45, 0);  scene.add(left);
+  const right = factory(true);  right.position.set( 0.55, 0.45, 0); scene.add(right);
+}
+
+function setupCanvas(id, factory) {
+  const canvas = document.getElementById(id);
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+  renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+  const fit = () => {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    renderer.setSize(w, h, false);
+    cam.aspect = w / h; cam.updateProjectionMatrix();
+  };
+  const cam = new THREE.PerspectiveCamera(38, 1, 0.05, 50);
+  cam.position.set(0, 0.6, 3.4);
+  cam.lookAt(0, 0.55, 0);
+  const scene = buildScene();
+  mountFists(scene, factory);
+  fit();
+  window.addEventListener('resize', fit);
+  // Drag to rotate.
+  let drag = false, lastX = 0, lastY = 0, yaw = 0, pitch = 0;
+  canvas.addEventListener('pointerdown', e => { drag = true; lastX = e.clientX; lastY = e.clientY; });
+  window.addEventListener('pointerup', () => drag = false);
+  window.addEventListener('pointermove', e => {
+    if (!drag) return;
+    yaw   += (e.clientX - lastX) * 0.01;
+    pitch += (e.clientY - lastY) * 0.005;
+    pitch = Math.max(-0.6, Math.min(0.6, pitch));
+    lastX = e.clientX; lastY = e.clientY;
+  });
+  // Idle auto-spin.
+  let t = 0;
+  function tick() {
+    t += 0.005;
+    const auto = drag ? 0 : t * 0.6;
+    const r = 3.4;
+    const ang = yaw + auto;
+    cam.position.set(Math.sin(ang) * r * Math.cos(pitch), 0.6 + Math.sin(pitch) * r, Math.cos(ang) * r * Math.cos(pitch));
+    cam.lookAt(0, 0.55, 0);
+    renderer.render(scene, cam);
+    requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+setupCanvas('a', buildHandA);
+setupCanvas('b', buildHandB);
+setupCanvas('c', buildHandC);
+</script>
+</body>
+</html>
