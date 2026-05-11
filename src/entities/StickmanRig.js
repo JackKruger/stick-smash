@@ -40,6 +40,369 @@ function solveIK(out, rootX, rootY, targetX, targetY, upperLen, lowerLen, bend =
   out.y = rootY + Math.sin(elbowAngle) * upperLen;
 }
 
+// ---------------------------------------------------------------------------
+// Strike pose functions — each returns a partial override object with any
+// subset of { armRX, armRY, armLX, armLY, legRX, legRY, legLX, legLY, leanZ }.
+// Coordinates are OFFSETS from the shoulder/hip anchor; rig applies them.
+// `t` = params.attackProgress (0..1 over move duration).
+// ---------------------------------------------------------------------------
+
+function poseJab(rig, params) {
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  let armX, armY, leanZ;
+  if (t < 0.25) {
+    const w = t / 0.25;
+    armX = lerp(0.30, -0.10, w);   // chamber back
+    armY = lerp(0.15, 0.20, w);
+    leanZ = lerp(0, -0.10, w);
+  } else if (t < 0.70) {
+    const w = (t - 0.25) / 0.45;
+    const e = w * w * (3 - 2 * w);
+    armX = lerp(-0.10, 0.90, e);   // straight out
+    armY = lerp(0.20, 0.15, e);
+    leanZ = lerp(-0.10, 0.20, e);
+  } else {
+    const w = (t - 0.70) / 0.30;
+    armX = lerp(0.90, 0.30, w);
+    armY = lerp(0.15, 0.15, w);
+    leanZ = lerp(0.20, 0, w);
+  }
+  return { armRX: armX, armRY: armY, leanZ };
+}
+
+function poseCross(rig, params) {
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  let armX, armY, leanZ;
+  if (t < 0.30) {
+    const w = t / 0.30;
+    armX = lerp(0.20, -0.20, w);   // deeper chamber + opposite arm
+    armY = lerp(0.15, 0.25, w);
+    leanZ = lerp(0, -0.15, w);
+  } else if (t < 0.75) {
+    const w = (t - 0.30) / 0.45;
+    const e = w * w * (3 - 2 * w);
+    armX = lerp(-0.20, 1.00, e);
+    armY = lerp(0.25, 0.15, e);
+    leanZ = lerp(-0.15, 0.30, e);   // full hip rotation
+  } else {
+    const w = (t - 0.75) / 0.25;
+    armX = lerp(1.00, 0.30, w);
+    armY = lerp(0.15, 0.15, w);
+    leanZ = lerp(0.30, 0, w);
+  }
+  return { armRX: armX, armRY: armY, leanZ };
+}
+
+function poseHook(rig, params) {
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  let armX, armY, leanZ;
+  if (t < 0.30) {
+    const w = t / 0.30;
+    armX = lerp(0.20, 0.40, w);     // arm wide to the side
+    armY = lerp(0.15, 0.30, w);
+    leanZ = lerp(0, 0.10, w);
+  } else if (t < 0.75) {
+    const w = (t - 0.30) / 0.45;
+    const e = w * w * (3 - 2 * w);
+    // Hook curves from wide to centerline.
+    armX = lerp(0.40, 0.85, e);
+    armY = lerp(0.30, 0.10, e);
+    leanZ = lerp(0.10, 0.35, e);
+  } else {
+    const w = (t - 0.75) / 0.25;
+    armX = lerp(0.85, 0.30, w);
+    armY = lerp(0.10, 0.15, w);
+    leanZ = lerp(0.35, 0, w);
+  }
+  return { armRX: armX, armRY: armY, leanZ };
+}
+
+function poseKnee(rig, params) {
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  // Knee uses the leg, not the arm. Override legR via separate field;
+  // arm just supports balance.
+  let legX, legY, leanZ;
+  if (t < 0.35) {
+    const w = t / 0.35;
+    legX = lerp(0.20, 0.05, w);    // tuck knee
+    legY = lerp(0, 0.30, w);
+    leanZ = lerp(0, 0.20, w);       // body folds forward
+  } else if (t < 0.70) {
+    const w = (t - 0.35) / 0.35;
+    const e = w * w * (3 - 2 * w);
+    legX = lerp(0.05, 0.60, e);
+    legY = lerp(0.30, 0.45, e);    // knee drives up to chest
+    leanZ = lerp(0.20, 0.15, e);
+  } else {
+    const w = (t - 0.70) / 0.30;
+    legX = lerp(0.60, 0.20, w);
+    legY = lerp(0.45, 0, w);
+    leanZ = lerp(0.15, 0, w);
+  }
+  return { legRX: legX, legRY: legY, leanZ, armRX: 0.10, armRY: 0.25 };
+}
+
+function poseSpinBack(rig, params) {
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  let armX, armY, leanZ;
+  if (t < 0.40) {
+    const w = t / 0.40;
+    armX = lerp(0.20, -0.40, w);
+    armY = lerp(0.15, 0.20, w);
+    leanZ = lerp(0, -0.50, w);    // wind up full 180° twist
+  } else if (t < 0.75) {
+    const w = (t - 0.40) / 0.35;
+    const e = w * w * (3 - 2 * w);
+    armX = lerp(-0.40, 1.10, e);
+    armY = lerp(0.20, 0.30, e);
+    leanZ = lerp(-0.50, 0.60, e);
+  } else {
+    const w = (t - 0.75) / 0.25;
+    armX = lerp(1.10, 0.30, w);
+    armY = lerp(0.30, 0.15, w);
+    leanZ = lerp(0.60, 0, w);
+  }
+  return { armRX: armX, armRY: armY, leanZ };
+}
+
+function poseBlowAway(rig, params) {
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  let armX, armY, leanZ, armLX, armLY;
+  if (t < 0.40) {
+    const w = t / 0.40;
+    armX = lerp(0.20, -0.15, w);
+    armY = lerp(0.15, 0.25, w);
+    armLX = lerp(-0.20, -0.10, w);
+    armLY = lerp(0.15, 0.25, w);
+    leanZ = lerp(0, -0.20, w);
+  } else if (t < 0.75) {
+    const w = (t - 0.40) / 0.35;
+    const e = w * w * (3 - 2 * w);
+    armX = lerp(-0.15, 1.15, e);
+    armY = lerp(0.25, 0.10, e);
+    armLX = lerp(-0.10, 0.95, e);   // both palms forward, stacked
+    armLY = lerp(0.25, 0.15, e);
+    leanZ = lerp(-0.20, 0.40, e);
+  } else {
+    const w = (t - 0.75) / 0.25;
+    armX = lerp(1.15, 0.30, w);
+    armY = lerp(0.10, 0.15, w);
+    armLX = lerp(0.95, -0.20, w);
+    armLY = lerp(0.15, 0.15, w);
+    leanZ = lerp(0.40, 0, w);
+  }
+  return { armRX: armX, armRY: armY, armLX, armLY, leanZ };
+}
+
+function poseUppercut(rig, params) {
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  let armX, armY, leanZ;
+  if (t < 0.40) {
+    const w = t / 0.40;
+    armX = lerp(0.20, 0.10, w);
+    armY = lerp(0.15, -0.30, w);   // drop to hip
+    leanZ = lerp(0, -0.30, w);      // deep knee bend
+  } else if (t < 0.78) {
+    const w = (t - 0.40) / 0.38;
+    const e = w * w * (3 - 2 * w);
+    armX = lerp(0.10, 0.40, e);
+    armY = lerp(-0.30, 0.95, e);   // rise straight up overhead
+    leanZ = lerp(-0.30, 0.10, e);
+  } else {
+    const w = (t - 0.78) / 0.22;
+    armX = lerp(0.40, 0.30, w);
+    armY = lerp(0.95, 0.15, w);
+    leanZ = lerp(0.10, 0, w);
+  }
+  return { armRX: armX, armRY: armY, leanZ };
+}
+
+function poseAxe(rig, params) {
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  let armX, armY, leanZ, armLX, armLY;
+  if (t < 0.45) {
+    const w = t / 0.45;
+    armX = lerp(0.20, 0.10, w);
+    armY = lerp(0.15, 1.10, w);    // both hands raised overhead
+    armLX = lerp(-0.20, -0.10, w);
+    armLY = lerp(0.15, 1.10, w);
+    leanZ = lerp(0, -0.10, w);
+  } else if (t < 0.80) {
+    const w = (t - 0.45) / 0.35;
+    const e = w * w * (3 - 2 * w);
+    armX = lerp(0.10, 0.30, e);
+    armY = lerp(1.10, -0.30, e);   // slam straight down
+    armLX = lerp(-0.10, 0.25, e);
+    armLY = lerp(1.10, -0.30, e);
+    leanZ = lerp(-0.10, 0.40, e);   // body folds over the hammer
+  } else {
+    const w = (t - 0.80) / 0.20;
+    armX = lerp(0.30, 0.30, w);
+    armY = lerp(-0.30, 0.15, w);
+    armLX = lerp(0.25, -0.20, w);
+    armLY = lerp(-0.30, 0.15, w);
+    leanZ = lerp(0.40, 0, w);
+  }
+  return { armRX: armX, armRY: armY, armLX, armLY, leanZ };
+}
+
+function poseCharge(rig, params) {
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  let armX, armY, leanZ;
+  if (t < 0.30) {
+    const w = t / 0.30;
+    armX = lerp(0.20, -0.10, w);
+    armY = lerp(0.15, 0.20, w);
+    leanZ = lerp(0, 0.40, w);      // body lunges forward
+  } else if (t < 0.70) {
+    const w = (t - 0.30) / 0.40;
+    const e = w * w * (3 - 2 * w);
+    armX = lerp(-0.10, 0.95, e);
+    armY = lerp(0.20, 0.15, e);
+    leanZ = lerp(0.40, 0.55, e);   // shoulder/elbow leads
+  } else {
+    const w = (t - 0.70) / 0.30;
+    armX = lerp(0.95, 0.30, w);
+    armY = lerp(0.15, 0.15, w);
+    leanZ = lerp(0.55, 0, w);
+  }
+  return { armRX: armX, armRY: armY, leanZ };
+}
+
+function poseCounterStance(rig, params) {
+  // Static stance through duration — slight settle on entry. No strike arc.
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  const settle = Math.min(1, t / 0.20);
+  // Lead palm raised in bong-sao guard.
+  const armX = lerp(0.20, 0.55, settle);
+  const armY = lerp(0.15, 0.40, settle);
+  // Body turned ~0.30 rad away from facing (back to opponent).
+  const leanZ = lerp(0, -0.30, settle);
+  return { armRX: armX, armRY: armY, leanZ };
+}
+function poseFlyingKnee(rig, params) {
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  let legX, legY, leanZ;
+  if (t < 0.30) {
+    const w = t / 0.30;
+    legX = lerp(0.20, 0.10, w);
+    legY = lerp(0, 0.25, w);
+    leanZ = lerp(0, 0.15, w);
+  } else if (t < 0.75) {
+    const w = (t - 0.30) / 0.45;
+    const e = w * w * (3 - 2 * w);
+    legX = lerp(0.10, 0.55, e);
+    legY = lerp(0.25, 0.40, e);
+    leanZ = lerp(0.15, 0.10, e);
+  } else {
+    const w = (t - 0.75) / 0.25;
+    legX = lerp(0.55, 0.20, w);
+    legY = lerp(0.40, 0, w);
+    leanZ = lerp(0.10, 0, w);
+  }
+  return { legRX: legX, legRY: legY, leanZ, armRX: 0.10, armRY: 0.20 };
+}
+
+function poseAirHook(rig, params) {
+  // Same as poseHook but with airborne lean cue.
+  const base = poseHook(rig, params);
+  return { ...base, leanZ: (base.leanZ ?? 0) + 0.10 };
+}
+
+function poseSomersault(rig, params) {
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  // Full body rotation around bodyTilt.
+  const rotation = Math.PI * 2 * t;       // one full spin over duration
+  let legX, legY;
+  // At peak rotation (~t=0.5-0.7) leg extends overhead for axe contact.
+  const peak = clamp((t - 0.40) / 0.35, 0, 1);
+  const axe = Math.sin(peak * Math.PI);
+  legX = 0.20 + axe * 0.30;
+  legY = 0.00 + axe * 1.10;
+  return { legRX: legX, legRY: legY, leanZ: rotation, armRX: 0.10, armRY: 0.10 };
+}
+
+function poseRisingKnee(rig, params) {
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  // Body curls into tuck on windup, knee leads up at strike.
+  let legX, legY, leanZ;
+  if (t < 0.35) {
+    const w = t / 0.35;
+    legX = lerp(0.20, 0.05, w);
+    legY = lerp(0, 0.35, w);
+    leanZ = lerp(0, 0.30, w);       // tuck forward
+  } else if (t < 0.75) {
+    const w = (t - 0.35) / 0.40;
+    const e = w * w * (3 - 2 * w);
+    legX = lerp(0.05, 0.10, e);
+    legY = lerp(0.35, 0.70, e);    // knee high
+    leanZ = lerp(0.30, -0.10, e);   // body uncurls upward
+  } else {
+    const w = (t - 0.75) / 0.25;
+    legX = lerp(0.10, 0.20, w);
+    legY = lerp(0.70, 0, w);
+    leanZ = lerp(-0.10, 0, w);
+  }
+  return { legRX: legX, legRY: legY, leanZ, armRX: 0.05, armRY: 0.05 };
+}
+
+function poseDive(rig, params) {
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  // Body angles 45° downward, both legs extend point-first.
+  let legX, legY, legLX, legLY, leanZ;
+  if (t < 0.35) {
+    const w = t / 0.35;
+    legX = lerp(0.20, 0.30, w);
+    legY = lerp(0, -0.10, w);
+    legLX = lerp(-0.20, 0.25, w);
+    legLY = lerp(0, -0.10, w);
+    leanZ = lerp(0, 0.45, w);       // dive angle
+  } else if (t < 0.80) {
+    legX = 0.30; legY = -0.10;
+    legLX = 0.25; legLY = -0.10;
+    leanZ = 0.45;
+  } else {
+    const w = (t - 0.80) / 0.20;
+    legX = lerp(0.30, 0.20, w);
+    legY = lerp(-0.10, 0, w);
+    legLX = lerp(0.25, -0.20, w);
+    legLY = lerp(-0.10, 0, w);
+    leanZ = lerp(0.45, 0, w);
+  }
+  return { legRX: legX, legRY: legY, legLX, legLY, leanZ, armRX: -0.10, armRY: 0.05 };
+}
+
+function poseSlideKick(rig, params) {
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  // Body already in horizontal slide pose; foot snap-extends mid.
+  let legX, legY, leanZ;
+  const arc = Math.sin(Math.PI * clamp((t - 0.10) / 0.80, 0, 1));
+  legX = 0.20 + arc * 1.10;       // lead leg extends forward
+  legY = -0.45 + arc * 0.10;       // stays low, foot-height
+  leanZ = -Math.PI / 3 + arc * 0.15;
+  return { legRX: legX, legRY: legY, legLX: -0.20, legLY: -0.10, leanZ, armRX: -0.30, armRY: 0.10 };
+}
+
+// Strike pose functions keyed on moveId.
+const STRIKE_POSES = {
+  jab:          poseJab,
+  cross:        poseCross,
+  hook:         poseHook,
+  knee:         poseKnee,
+  spinBack:     poseSpinBack,
+  heavyNeutral: poseBlowAway,
+  heavyUp:      poseUppercut,
+  heavyDown:    poseAxe,
+  heavyForward: poseCharge,
+  heavyBack:    poseCounterStance,
+  airJab:       poseFlyingKnee,
+  airHook:      poseAirHook,
+  airHeavyN:    poseSomersault,
+  airHeavyU:    poseRisingKnee,
+  airHeavyD:    poseDive,
+  slideKick:    poseSlideKick,
+};
+
 export class StickmanRig {
   constructor({ primary = 0xffcc33, accent = 0x1a1a2e } = {}) {
     this.group = new THREE.Group();
@@ -131,6 +494,19 @@ export class StickmanRig {
     // Throw windup arm rear-back amount, 0..1. Driven by Stickman via params.
     this._throwAnticipation = 0;
 
+    // Head pitch — extra rotation.x applied on top of aim.y.
+    // Used by slide (looking forward despite pitched body).
+    this.headPitch = 0;
+    this.headPitchTarget = 0;
+
+    // Slide pose state — set each frame when sliding, cleared after use.
+    this._slideArmDrift = false;
+    this._slideLeadX = 0;
+    this._slideTrailX = 0;
+
+    // Prone loose-limb gate — set true on prone tick, cleared at end of frame.
+    this._proneLooseLimbs = false;
+
     // Reused vectors / state
     this._hip = new THREE.Vector3();
     this._headLagX = 0; this._headLagY = 0;
@@ -212,6 +588,36 @@ export class StickmanRig {
       this.bodyTiltTarget += this.facing * attackLean;
     }
     this.bodyTiltTarget += this.hitTilt;
+
+    // Slide pose — body pitches forward, head looks forward, arms trail.
+    // Activates whenever params.sliding is true and not in a strike-pose
+    // that already drives the body (slideKick uses its own leg arc on top
+    // of this).
+    if (params.sliding) {
+      this.bodyTiltTarget = this.facing * (-Math.PI / 3);
+      // Lead leg extends forward (1.3 reach from hip).
+      const lead = 1.30 * this.facing;
+      // Trail leg tucks under (knee toward chest).
+      const trail = -0.20 * this.facing;
+      // Arms drift back + slightly up (override walk targets later).
+      this._slideArmDrift = true;
+      this._slideLeadX = lead;
+      this._slideTrailX = trail;
+      // Head looks forward despite body pitch.
+      this.headPitchTarget = 0.25;
+    } else {
+      this._slideArmDrift = false;
+    }
+
+    // Prone crouch — body lays near-horizontal.
+    if (params.prone) {
+      const bob = Math.sin(performance.now() * 0.003) * 0.04;
+      this.bodyTiltTarget = this.facing * (-Math.PI / 2) + bob;
+      this._proneLooseLimbs = true;
+    } else {
+      this._proneLooseLimbs = false;
+    }
+
     this.bodyTilt = damp(this.bodyTilt, this.bodyTiltTarget, 0.0001, dt);
     this.hitTilt = damp(this.hitTilt, 0, 0.001, dt);
 
@@ -328,7 +734,9 @@ export class StickmanRig {
     this._headLagX = damp(this._headLagX, targetLagX, 0.0008, dt);
     this._headLagY = damp(this._headLagY, targetLagY, 0.0008, dt);
     this.head.position.set(headX + this._headLagX, headY + this._headLagY, hipZ);
-    this.head.rotation.set((params.aim?.y ?? 0) * 0.4, this.facing < 0 ? Math.PI : 0, this.bodyTilt * 0.5);
+    this.headPitch = damp(this.headPitch, this.headPitchTarget, 0.0008, dt);
+    this.headPitchTarget = 0; // reset each frame — callers set it before the head render
+    this.head.rotation.set((params.aim?.y ?? 0) * 0.4 + this.headPitch, this.facing < 0 ? Math.PI : 0, this.bodyTilt * 0.5);
 
     if (this.chestArmor.visible) {
       const cx = hipX + torsoUpX * (0.35 * this.squash);
@@ -473,6 +881,34 @@ export class StickmanRig {
       this._plantLX = footLX;
     }
 
+    // Slide foot stance — lock foot poses to slide stance.
+    if (params.sliding && !params.moveId) {
+      footRX = hipX + this._slideLeadX;
+      footRY = baseFootY - 0.15;
+      footLX = hipX + this._slideTrailX;
+      footLY = baseFootY - 0.10;
+    }
+
+    // Resolve strikePose here so both the leg-override block below and the
+    // arm dispatcher further down can reference it without a TDZ error.
+    const moveId = params.moveId;
+    const strikePose = moveId ? STRIKE_POSES[moveId]?.(this, params) : null;
+
+    // Strike pose leg overrides (e.g. knee, flying-knee, dive, slide-kick).
+    // These run AFTER kicking so pose-specific arcs take precedence.
+    if (strikePose) {
+      if (strikePose.legRX !== undefined) {
+        footRX = hipX + this.facing * strikePose.legRX;
+        footRY = baseFootY + strikePose.legRY;
+        this._plantRX = hipX + this.facing * 0.20;
+      }
+      if (strikePose.legLX !== undefined) {
+        footLX = hipX + this.facing * strikePose.legLX;
+        footLY = baseFootY + strikePose.legLY;
+        this._plantLX = footLX;
+      }
+    }
+
     // Walk-cycle arm targets — shoulder roll twists shoulders opposite of hip
     // sway during run so torso reads as articulated, not a rigid plank.
     // Shoulders counter-rotate against pelvis: when R hip leads forward,
@@ -486,10 +922,25 @@ export class StickmanRig {
     const aimAng = Math.atan2(aim.y, aim.x);
     const aimDist = Math.min(0.7, Math.hypot(aim.x, aim.y) * 0.7 + 0.55);
 
+    // STRIKE_POSES dispatcher — strikePose is already resolved above (hoisted
+    // to fix TDZ); just apply arm override here if the pose defines one.
+    if (strikePose && strikePose.armRX !== undefined) {
+      // Override right-arm pose with strike-specific arc.
+      // Mutate params so the branch below skips the old 'attack' arc.
+      params.armPoseR = 'strikePosed';
+    }
+
     let handRX, handRY;
     if (params.armPoseR === 'aim') {
       handRX = sRX + Math.cos(aimAng) * aimDist;
       handRY = sRY + Math.sin(aimAng) * aimDist;
+    } else if (params.armPoseR === 'strikePosed') {
+      // Handled by STRIKE_POSES dispatcher above — apply the resolved offsets.
+      handRX = sRX + this.facing * strikePose.armRX;
+      handRY = sRY + strikePose.armRY;
+      if (strikePose.leanZ !== undefined) {
+        this.bodyTiltTarget += this.facing * strikePose.leanZ;
+      }
     } else if (params.armPoseR === 'attack') {
       // Three-phase swing: windup (rear back & up) → strike (whip through a
       // big arc, arm extends at peak) → follow-through (settle to neutral).
@@ -621,6 +1072,37 @@ export class StickmanRig {
       handLY = sLY + armUp;
     }
 
+    // Apply strikePose left-arm override (e.g. two-handed moves like poseBlowAway / poseAxe).
+    if (strikePose && strikePose.armLX !== undefined) {
+      handLX = sLX + this.facing * strikePose.armLX;
+      handLY = sLY + strikePose.armLY;
+    }
+
+    // Slide arm drift — both arms trail behind body.
+    if (params.sliding && this._slideArmDrift && !params.moveId) {
+      handRX = sRX - this.facing * 0.50;   // arm trails behind
+      handRY = sRY + 0.20;                  // slightly up (wind drag)
+      handLX = sLX - this.facing * 0.40;   // mirror left arm trailing
+      handLY = sLY + 0.15;
+    }
+
+    // Prone loose limbs — drop pose blend weight for off-arm + both legs.
+    // The aim arm stays stiff and tracks params.aim even while prone.
+    if (this._proneLooseLimbs && params.armPoseR !== 'strikePosed') {
+      // Slacken off-arm target toward neutral hanging position.
+      handLX = lerp(handLX, sLX, 0.85);
+      handLY = lerp(handLY, sLY - 0.20, 0.85);
+      // Legs hang where they fall — push targets toward ground.
+      footRY = baseFootY - 0.05;
+      footLY = baseFootY - 0.05;
+    }
+    // Aim-arm tracks aim vector even in prone.
+    if (params.prone && params.aim) {
+      const aimAngProne = Math.atan2(params.aim.y, params.aim.x);
+      handRX = sRX + Math.cos(aimAngProne) * 0.7;
+      handRY = sRY + Math.sin(aimAngProne) * 0.7;
+    }
+
     // Idle baseline ragdoll droop on arms (only in walk pose)
     const idleLoose = (params.armPoseR === 'walk' && params.armPoseL === 'walk') ? 0.10 : 0;
     const totalRag = Math.max(idleLoose, this.ragdollAmount);
@@ -672,7 +1154,7 @@ export class StickmanRig {
       this._springInit = true;
     }
     const sdt = Math.min(dt, 1 / 60);
-    const stiff = (params.armPoseR === 'aim' || params.armPoseR === 'attack' || params.armPoseR === 'hold');
+    const stiff = (params.armPoseR === 'aim' || params.armPoseR === 'attack' || params.armPoseR === 'strikePosed' || params.armPoseR === 'hold');
     // Ragdoll softens spring stiffness so limbs flop instead of snapping back.
     // Fully ragdoll (1.0) = very soft; idle ragdoll (0.10) barely affects feel.
     const ragSoft = clamp(this.ragdollAmount, 0, 1);
@@ -717,7 +1199,7 @@ export class StickmanRig {
     this._drawLeg(hipRX, hipRY, this._footRPos.x, this._footRPos.y, zR, this.upperLegR, this.lowerLegR, this.footR, this.hipR, this.kneeR, true);
 
     // Hand orientation for aim
-    if (params.armPoseR === 'aim' || params.armPoseR === 'attack') {
+    if (params.armPoseR === 'aim' || params.armPoseR === 'attack' || params.armPoseR === 'strikePosed') {
       this.handR.rotation.z = aimAng;
     } else {
       this.handR.rotation.z = 0;

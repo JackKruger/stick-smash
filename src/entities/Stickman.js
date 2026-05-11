@@ -23,6 +23,41 @@ export const STATE = {
   DEAD: 'dead',
 };
 
+// Strike profile table. Every move shares this shape.
+// activeStart/activeEnd are normalized 0..1 progress through `dur`.
+// heightOffset adjusts hitbox Y from body center (negative = low, positive = high).
+// launch=true means the hit triggers ragdoll on the victim.
+// kbX is multiplied by attacker.facing in the hitbox loop.
+const MOVE_TABLE = {
+  // Ground lights — chain step 0..4
+  jab:          { type:'light', dur:0.14, activeStart:0.25, activeEnd:0.70, reach:0.95, radius:1.0, dmg:6,  kbX:5,  kbY:1, stun:0.15, launch:false, heightOffset:0.15, recovery:0.18 },
+  cross:        { type:'light', dur:0.16, activeStart:0.30, activeEnd:0.75, reach:1.00, radius:1.0, dmg:8,  kbX:7,  kbY:1, stun:0.20, launch:false, heightOffset:0.15, recovery:0.20 },
+  hook:         { type:'light', dur:0.18, activeStart:0.30, activeEnd:0.75, reach:0.90, radius:1.0, dmg:10, kbX:6,  kbY:2, stun:0.25, launch:false, heightOffset:0.15, recovery:0.22 },
+  knee:         { type:'light', dur:0.18, activeStart:0.35, activeEnd:0.70, reach:0.70, radius:1.0, dmg:11, kbX:5,  kbY:4, stun:0.30, launch:false, heightOffset:0.00, recovery:0.22 },
+  spinBack:     { type:'light', dur:0.24, activeStart:0.40, activeEnd:0.75, reach:1.10, radius:1.0, dmg:14, kbX:12, kbY:3, stun:0.35, launch:false, heightOffset:0.20, recovery:0.30 },
+  // Ground heavies — direction at release
+  heavyNeutral: { type:'heavy', dur:0.45, activeStart:0.40, activeEnd:0.75, reach:1.10, radius:1.1, dmg:22, kbX:18, kbY:4, stun:0.40, launch:true,  heightOffset:0.15, recovery:0.45 },
+  heavyUp:      { type:'heavy', dur:0.45, activeStart:0.40, activeEnd:0.78, reach:0.85, radius:1.0, dmg:18, kbX:4,  kbY:14,stun:0.40, launch:true,  heightOffset:0.40, recovery:0.45 },
+  heavyDown:    { type:'heavy', dur:0.50, activeStart:0.45, activeEnd:0.80, reach:0.90, radius:1.1, dmg:25, kbX:6,  kbY:-8,stun:0.45, launch:true,  heightOffset:-0.20,recovery:0.50 },
+  heavyForward: { type:'heavy', dur:0.40, activeStart:0.30, activeEnd:0.70, reach:1.30, radius:1.0, dmg:20, kbX:16, kbY:5, stun:0.40, launch:true,  heightOffset:0.15, recovery:0.40 },
+  heavyBack:    { type:'heavy', dur:0.55, activeStart:0.00, activeEnd:0.00, reach:0,    radius:0,   dmg:0,  kbX:0,  kbY:0, stun:0,    launch:false, heightOffset:0,    recovery:0.55 },
+  // Aerials — air chain step 0..1
+  airJab:       { type:'airLight', dur:0.20, activeStart:0.30, activeEnd:0.75, reach:0.85, radius:1.0, dmg:9,  kbX:8, kbY:2,  stun:0.20, launch:false, heightOffset:0.05, recovery:0.18 },
+  airHook:      { type:'airLight', dur:0.22, activeStart:0.30, activeEnd:0.75, reach:0.95, radius:1.0, dmg:11, kbX:9, kbY:2,  stun:0.25, launch:false, heightOffset:0.10, recovery:0.20 },
+  airHeavyN:    { type:'airHeavy', dur:0.45, activeStart:0.40, activeEnd:0.80, reach:1.05, radius:1.1, dmg:20, kbX:10,kbY:3,  stun:0.40, launch:true,  heightOffset:0.10, recovery:0.40 },
+  airHeavyU:    { type:'airHeavy', dur:0.40, activeStart:0.35, activeEnd:0.75, reach:0.80, radius:1.0, dmg:16, kbX:3, kbY:15, stun:0.40, launch:true,  heightOffset:0.30, recovery:0.40 },
+  airHeavyD:    { type:'airHeavy', dur:0.40, activeStart:0.35, activeEnd:0.80, reach:0.90, radius:1.0, dmg:22, kbX:8, kbY:-10,stun:0.45, launch:true,  heightOffset:-0.30,recovery:0.40 },
+  // Special
+  slideKick:    { type:'special', dur:0.32, activeStart:0.20, activeEnd:0.85, reach:1.25, radius:1.0, dmg:14, kbX:8, kbY:1.5,stun:0.35, launch:true,  heightOffset:-0.35, recovery:0.30 },
+};
+
+// Ground light chain order.
+const GROUND_CHAIN = ['jab','cross','hook','knee','spinBack'];
+
+// Weapon strings that the back-counter parry can deflect. Must stay in sync
+// with the melee weapon list used by _tryClashOnIncoming.
+const PARRY_DEFLECT_WEAPONS = new Set(['fist','sword','bat','longsword','mace','hammer','halberd','saber']);
+
 export class Stickman {
   constructor(world, scene, opts) {
     this.world = world;
@@ -116,6 +151,7 @@ export class Stickman {
       aimActive: false,
     };
     this._prev = { jump: false, attack: false, grab: false, special: false, throw: false };
+    this._attackPressedAt = 0;   // ms — last press timestamp for hold detection
 
     // State
     this.state = STATE.ACTIVE;
@@ -134,8 +170,8 @@ export class Stickman {
     this._jumpLockUntil = 0;
     this._jumpInputCooldown = 0;
     this._dustTimer = 0;
-    this.airJumps = 2; // 1 ground + 2 air = up to triple jump per landing
-    this.airJumpsLeft = 2;
+    this.airJumps = 1; // 1 ground + 1 air = double jump
+    this.airJumpsLeft = 1;
     this.facing = 1;
     this.aimDir = new THREE.Vector2(1, 0);
     this.crouching = false;
@@ -147,11 +183,32 @@ export class Stickman {
     this.attackCooldown = 0;
     this.attackHits = new Set();  // bodies hit this swing
     this.hitstun = 0;
-    // Unarmed combo state — 0=jab, 1=cross, 2=kick. Resets after window.
-    this.comboStep = 0;
-    this.comboTimer = 0;
-    this._attackStep = 0;
-    this.kicking = false;
+    // Combat — combo state
+    this.moveId = null;          // 'jab'|'cross'|'hook'|'knee'|'spinBack'
+                                  // |'heavyNeutral'|'heavyUp'|'heavyDown'|'heavyForward'|'heavyBack'
+                                  // |'airJab'|'airHook'|'airHeavyN'|'airHeavyU'|'airHeavyD'
+                                  // |'slideKick'  or null
+    this.chainStep = 0;          // 0..4 ground light chain
+    this.airChainStep = 0;       // 0..1 air light chain
+    this.chainTimer = 0;         // s remaining in chain window before reset
+    this.charging = false;
+    this.chargeStartedAt = 0;    // performance.now() ms when attack pressed
+    this._pressDir = { x: 0, y: 0 };  // dir cached at press
+    this.parryUntil = 0;         // ms — back-counter active until
+    this.parryRecoverUntil = 0;  // ms — back-counter whiff lockout end
+    this.juggled = false;        // launched-airborne flag
+    this.juggledUntil = 0;       // ms
+    this.juggleHits = 0;         // count of launched hits this window
+    this.juggleStartedAt = 0;    // ms — when launcher hit landed (juggle ceiling anchor)
+
+    // Back-compat aliases for legacy code paths (rig reads, weapons, etc.).
+    // Keep these as derived flags so renders + bot AI continue working unchanged
+    // during partial rollouts.
+    this._attackStep = 0;        // legacy — rig reads this
+    this.kicking = false;        // legacy — rig reads this
+
+    this._chargeTellTick = 0;    // charge tell particle counter
+
     this.invuln = 0;
     this.flashAmount = 0;
     this.lastDamager = null;
@@ -245,6 +302,7 @@ export class Stickman {
   get alive() { return this.state !== STATE.DEAD && this.lives > 0; }
 
   setWeapon(weapon) {
+    if (this.charging) this._clearCombatState();
     if (this.weapon) {
       const old = this.weapon;
       old.detach();
@@ -274,6 +332,22 @@ export class Stickman {
     // also mid-swing of a melee/fist and facing the attacker, both attacks
     // parry. No damage, both knocked back, both staggered briefly.
     if (this._tryClashOnIncoming(opts)) return false;
+    // Back-counter parry: if attacker is mid-melee swing and the defender
+    // is in their active parry window, treat as a clash (both bounce,
+    // both cancel) — no damage taken on either side.
+    const tNow = performance.now();
+    const parryActive = tNow < this.parryUntil;
+    const allowed = PARRY_DEFLECT_WEAPONS.has(opts.weapon);
+    if (parryActive && allowed && opts.attacker && opts.attacker !== this) {
+      // Reuse the existing two-strike clash resolution.
+      if (this._clash) this._clash(opts.attacker);
+      this.parryUntil = 0;
+      // Drop the defender out of counter-stance immediately so they can act.
+      this.attackTimer = 0;
+      this.moveId = null;
+      this.parryRecoverUntil = 0;
+      return;  // damage suppressed
+    }
     // Armor absorbs damage first. When armor breaks, spawn a chunk that falls.
     if (this.armor > 0 && opts.weapon !== 'lava' && opts.weapon !== 'flame') {
       const absorbed = Math.min(this.armor, amount);
@@ -290,7 +364,6 @@ export class Stickman {
     }
     this.health -= amount;
     this.flashAmount = Math.min(1, this.flashAmount + Math.min(1, amount / 10));
-    this.lastDamager = opts.attacker ?? null;
     this.lastDamageWeapon = opts.weapon ?? null;
     // Skip sound for tiny continuous DoT (lava, burn).
     const quiet = opts.weapon === 'lava' || opts.weapon === 'flame';
@@ -299,6 +372,17 @@ export class Stickman {
       this.applyKnockback(opts.kb.x, opts.kb.y, opts.stun ?? 0.25);
       this.rig.flinch?.(opts.kb.x, clamp(amount / 25, 0.4, 1.5));
     }
+    // Launch flag from combat MOVE_TABLE — heavy/launcher hits ragdoll the
+    // victim regardless of remaining HP. Pure stagger lights leave the
+    // victim upright.
+    if (opts.launch && this.alive) {
+      // Approximate by setting hitstun proportional to launch force and
+      // letting physics carry the body.
+      const launchStun = (opts.stun ?? 0.3) + 0.25;
+      this.hitstun = Math.max(this.hitstun, launchStun);
+      this.flashAmount = 1;
+    }
+    this.lastDamager = opts.attacker ?? null;
 
     // Visual feedback: blood, hit-stop, screenshake, briefly tilt body.
     const game = this.game ?? opts.attacker?.game;
@@ -329,6 +413,7 @@ export class Stickman {
 
   die(reason = 'ko') {
     if (this.state === STATE.DEAD) return;
+    this._clearCombatState();
     this.state = STATE.DEAD;
     this.health = 0;
     this.deaths++;
@@ -861,112 +946,294 @@ export class Stickman {
   }
 
   _doAttack() {
+    // Compatibility entry-point — still called from tick() on attackPressed.
+    // Routes to weapon path if armed, otherwise enters the unarmed FSM.
     if (this.attackCooldown > 0) return;
-    if (this.weapon) {
-      this.weapon.tryFire(this);
+    if (this.weapon) { this.weapon.tryFire(this); return; }
+    // Slide-kick short-circuit — committed even mid-slide.
+    if (this.sliding && this.grounded) {
+      this._fireMove('slideKick');
       return;
     }
-    // Unarmed combo: jab → cross → kick. Within combo window, each press
-    // chains the next move. After the kick (or expiry), combo resets.
-    if (this.comboTimer <= 0) this.comboStep = 0;
-    const step = this.comboStep;
-    this._attackStep = step;
-    this.kicking = (step === 2);
-    const dur = step === 0 ? 0.18 : step === 1 ? 0.22 : 0.30;
-    this.attackTimer = dur;
-    this.attackCooldown = step === 2 ? 0.45 : 0.30;
+    if (performance.now() < this.parryRecoverUntil) return;
+    if (this.charging || this.moveId) return;
+    this.charging = true;
+    this.chargeStartedAt = performance.now();
+    this._pressDir = { x: this.input.moveX, y: this.input.moveY };
+  }
+
+  // Called per-frame from tick() to resolve a held attack on release.
+  _chargeTick(dt) {
+    if (!this.charging) return;
+    // If frozen mid-charge, cancel — we won't receive a release edge during freeze.
+    if (performance.now() < this._frozenUntil) {
+      this.charging = false;
+      this.chargeStartedAt = 0;
+      return;
+    }
+    // Cancel on jump, hit, ragdoll, etc. (Those branches clear this.charging
+    // elsewhere — here we only resolve on release.)
+    if (!this.input.attackReleased) {
+      // Charge tell — emit one glow particle every ~5 frames on the
+      // striking limb. Direction at current stick gives a hint of which
+      // heavy will fire on release.
+      if (this.charging && this.game?.fx?.particles) {
+        this._chargeTellTick = (this._chargeTellTick || 0) + 1;
+        if (this._chargeTellTick % 5 === 0) {
+          const dir = this.input;
+          const id = this._heavyForDir({ x: dir.moveX, y: dir.moveY }, !this.grounded);
+          const useFoot = (id === 'airHeavyD' || id === 'airHeavyN');
+          const cx = this.position.x + this.facing * (useFoot ? 0.25 : 0.55);
+          const cy = this.position.y + (useFoot ? -0.30 : 0.30);
+          this.game.fx.particles.spark?.spawn?.({
+            x: cx, y: cy, z: 0,
+            vx: (Math.random() - 0.5) * 1, vy: useFoot ? -0.5 : 0.5,
+            life: 0.25, size: 0.18,
+            color: 0xffd866, gravity: 0, drag: 0.8, shrink: 1.5,
+          });
+        }
+      }
+      return;
+    }
+    const heldS = (performance.now() - this.chargeStartedAt) / 1000;
+    this.charging = false;
+    const liveDir = { x: this.input.moveX, y: this.input.moveY };
+    const dir = (heldS >= 0.20) ? liveDir : this._pressDir;
+    const airborne = !this.grounded;
+    let id;
+    if (heldS >= 0.20) {
+      id = this._heavyForDir(dir, airborne);
+    } else if (airborne) {
+      id = (this.airChainStep === 0) ? 'airJab' : 'airHook';
+      this.airChainStep = (this.airChainStep + 1) % 2;
+    } else {
+      id = GROUND_CHAIN[this.chainStep];
+      this.chainStep = (this.chainStep + 1) % GROUND_CHAIN.length;
+      this.chainTimer = 0.45;
+    }
+    this._fireMove(id);
+  }
+
+  _heavyForDir(dir, airborne) {
+    if (airborne) {
+      if (dir.y < -0.4) return 'airHeavyD';
+      if (dir.y >  0.4) return 'airHeavyU';
+      return 'airHeavyN';
+    }
+    if (dir.y >  0.4) return 'heavyUp';
+    if (dir.y < -0.4) return 'heavyDown';
+    // Treat "back" as stick away from facing.
+    const f = this.facing || 1;
+    if (Math.abs(dir.x) > 0.4) {
+      if (Math.sign(dir.x) === f) return 'heavyForward';
+      return 'heavyBack';
+    }
+    return 'heavyNeutral';
+  }
+
+  _clearCombatState() {
+    this.charging = false;
+    this.chargeStartedAt = 0;
+    this._chargeTellTick = 0;
+    this.moveId = null;
+    this.attackTimer = 0;
+    this.kicking = false;
+    this.chainStep = 0;
+    this.airChainStep = 0;
+    this.chainTimer = 0;
+    this.juggled = false;
+    this.juggledUntil = 0;
+    this.juggleHits = 0;
+    this.parryUntil = 0;
+    this.parryRecoverUntil = 0;
+  }
+
+  _fireMove(id) {
+    const m = MOVE_TABLE[id];
+    if (!m) return;
+    this.moveId = id;
+    this.attackTimer = m.dur;
+    this.attackCooldown = m.recovery;
     this.attackHits.clear();
-    this.comboStep = (step + 1) % 3;
-    this.comboTimer = step === 2 ? 0 : 0.55;
+    // Legacy rig flags so old rig code paths render reasonable poses until
+    // the rig is rewritten in Task 11–13.
+    this.kicking = (id === 'knee' || id === 'spinBack'
+                    || id === 'airHeavyN' || id === 'airHeavyD' || id === 'slideKick');
+    this._attackStep = (id === 'jab') ? 0 : (id === 'cross') ? 1 : 2;
+
+    // Per-move startup impulses.
+    if (id === 'heavyForward') {
+      this.body.velocity.x += this.facing * 8;
+    } else if (id === 'airHeavyD') {
+      this.body.velocity.y -= 12;
+      this.body.velocity.x += this.facing * 6;
+    } else if (id === 'slideKick') {
+      // Maintain slide momentum — no impulse change.
+    }
+
+    // Back-counter — set parry window, no hitbox.
+    if (id === 'heavyBack') {
+      const t = performance.now();
+      this.parryUntil = t + 250;
+      this.parryRecoverUntil = t + 550;
+    }
+
     audio.swing();
   }
 
   _attackTick(dt, players) {
     if (this.attackCooldown > 0) this.attackCooldown -= dt;
-    // Tick combo window — once it expires the next press starts a fresh combo.
-    if (this.comboTimer > 0) {
-      this.comboTimer -= dt;
-      if (this.comboTimer <= 0) this.comboStep = 0;
+    if (this.attackTimer <= 0) {
+      if (this.moveId) {
+        this.moveId = null;
+        this.kicking = false;
+      }
+      return;
     }
-    if (this.attackTimer > 0) {
-      this.attackTimer -= dt;
-      if (this.attackTimer <= 0) this.kicking = false;
-      // Weapons handle their own hit detection in worldTick — skip unarmed hit-box.
-      if (this.weapon) return;
-      // Use the duration set by the combo step so phase reads 0..1 correctly.
-      const stepDur = this._attackStep === 0 ? 0.18 : this._attackStep === 1 ? 0.22 : 0.30;
-      const phase = 1 - this.attackTimer / stepDur;
-      if (phase > 0.25 && phase < 0.85) {
-        const tNow = performance.now();
-        const gumGum = tNow < this.gumGumUntil;
-        const isKick = this.kicking;
-        // Kick has bigger reach + lower hit-box (foot height).
-        const reach = gumGum ? 4.8 : (isKick ? 1.25 : 0.95);
-        const radius = gumGum ? 0.8 : (isKick ? 1.1 : 1.0);
-        const cx = this.position.x + this.facing * reach;
-        const cy = this.position.y + (isKick ? -0.20 : 0.15);
-        const superPunch = tNow < this.superPunchUntil;
-        // Combo damage curve: jab(8) → cross(13) → kick(22). Super-punch and
-        // gum-gum override.
-        const comboBase = this._attackStep === 0 ? 8 : this._attackStep === 1 ? 13 : 22;
-        const dmg = superPunch ? 60 : (gumGum ? 22 : comboBase);
-        const comboKb = this._attackStep === 0 ? 9 : this._attackStep === 1 ? 14 : 19;
-        const comboKbY = this._attackStep === 0 ? 4 : this._attackStep === 1 ? 6 : 9;
-        const kbMul = superPunch ? 3.5 : (gumGum ? 1.6 : 1);
-        const kbX = (superPunch || gumGum) ? this.facing * 11 * kbMul : this.facing * comboKb;
-        const kbY = (superPunch || gumGum) ? 5 * kbMul : comboKbY;
-        for (const p of players) {
-          if (!p || p === this || !p.alive || p.invuln > 0) continue;
-          if (this.attackHits.has(p.id)) continue;
-          const dx = p.position.x - cx, dy = p.position.y - cy;
-          if (dx * dx + dy * dy < radius * radius) {
-            p.takeDamage(dmg, {
-              attacker: this, weapon: superPunch ? 'super' : (gumGum ? 'gumgum' : 'fist'),
-              kb: { x: kbX, y: kbY }, stun: superPunch ? 0.5 : (isKick ? 0.35 : 0.2),
-            });
-            this.attackHits.add(p.id);
-            if (superPunch && this.game?.fx) {
-              this.game.fx.particles.burst(p.position.x, p.position.y, 0, { count: 22, speed: 12, color: 0xffcc33 });
-              this.game.fx.camera.punch(0.45);
-              this.game.hitStop?.(0.1);
-            }
-          }
+    this.attackTimer -= dt;
+    if (this.attackTimer <= 0) {
+      this.moveId = null;
+      this.kicking = false;
+      return;
+    }
+    // Weapons handle their own hit detection.
+    if (this.weapon) return;
+    const id = this.moveId;
+    if (!id) return;
+    const m = MOVE_TABLE[id];
+    if (!m) return;
+    // heavyBack is parry-only — no hitbox.
+    if (m.radius <= 0 || m.dmg === 0) return;
+
+    const phase = 1 - this.attackTimer / m.dur;
+    if (phase < m.activeStart || phase > m.activeEnd) return;
+
+    const tNow = performance.now();
+    const gumGum = tNow < this.gumGumUntil;
+    const superPunch = tNow < this.superPunchUntil;
+
+    // Reach is amplified by gumGum (rubber stretch).
+    const reach = gumGum ? Math.max(m.reach, 4.8) : m.reach;
+    const radius = gumGum ? 0.8 : m.radius;
+    const cx = this.position.x + this.facing * reach;
+    const cy = this.position.y + m.heightOffset;
+
+    // Damage / kb base from move table, overridden by super/gumGum.
+    let baseDmg = m.dmg;
+    let baseKbX = this.facing * m.kbX;
+    let baseKbY = m.kbY;
+    let baseStun = m.stun;
+    if (superPunch) {
+      baseDmg = 60;
+      baseKbX = this.facing * 38;
+      baseKbY = 17;
+      baseStun = 0.5;
+    } else if (gumGum) {
+      baseDmg = 22;
+      baseKbX = this.facing * 17;
+      baseKbY = 8;
+      baseStun = 0.35;
+    }
+
+    for (const p of players) {
+      if (!p || p === this || !p.alive || p.invuln > 0) continue;
+      if (this.attackHits.has(p.id)) continue;
+      const dx = p.position.x - cx;
+      const dy = p.position.y - cy;
+      if (dx * dx + dy * dy >= radius * radius) continue;
+
+      let dmg = baseDmg;
+      let kbX = baseKbX;
+      let kbY = baseKbY;
+      let stun = baseStun;
+
+      // Counter-hit: victim is in their own attack startup.
+      if (p.attackTimer > 0 && p.moveId && MOVE_TABLE[p.moveId]) {
+        const pDur = MOVE_TABLE[p.moveId].dur;
+        const pPhase = 1 - p.attackTimer / pDur;
+        if (pPhase < 0.5) {
+          dmg *= 1.3;
+          stun *= 1.3;
         }
-        // Punches reflect projectiles (smaller arc).
-        if (this.game?.projectiles) {
-          for (const pr of this.game.projectiles) {
-            if (pr.dead || pr.owner === this) continue;
-            // Stuck projectiles have no body — they're cosmetic at this point.
-            if (!pr.body || pr.stuck) continue;
-            const dx = pr.body.position.x - cx, dy = pr.body.position.y - cy;
-            if (dx * dx + dy * dy < 0.9 * 0.9) {
-              pr.body.velocity.x = -pr.body.velocity.x * 1.2 + this.facing * 4;
-              pr.body.velocity.y = Math.abs(pr.body.velocity.y) * 0.6 + 4;
-              pr.owner = this;
-              this.game.fx.particles.burst(pr.body.position.x, pr.body.position.y, 0, { count: 8, speed: 6, color: 0xffffff });
-              this.game.fx.camera.punch(0.06);
-            }
-          }
+      }
+
+      // Juggle scaling: air-light hits onto launched victim do less.
+      if (p.juggled && m.type === 'airLight') {
+        dmg *= 0.6;
+        kbX *= 0.5;
+        kbY *= 0.5;
+      }
+
+      const launch = !!m.launch && !superPunch;  // super already mega-launches
+      p.takeDamage(dmg, {
+        attacker: this,
+        weapon: superPunch ? 'super' : (gumGum ? 'gumgum' : 'fist'),
+        kb: { x: kbX, y: kbY },
+        stun,
+        launch: launch || superPunch,
+      });
+      this.attackHits.add(p.id);
+
+      // Upward-launcher → start juggle on victim.
+      if (m.launch && (id === 'heavyUp' || id === 'airHeavyU')) {
+        p.juggled = true;
+        p.juggledUntil = performance.now() + 1200;
+        p.juggleHits = 0;
+        p.juggleStartedAt = performance.now();
+      }
+      if (p.juggled) {
+        p.juggleHits++;
+        if (p.juggleHits >= 4) p.juggled = false;
+        else {
+          const JUGGLE_HIT_EXTEND_MS = 400;
+          const JUGGLE_MAX_MS = 1200;
+          p.juggledUntil = Math.min(
+            (p.juggleStartedAt || performance.now()) + JUGGLE_MAX_MS,
+            p.juggledUntil + JUGGLE_HIT_EXTEND_MS
+          );
         }
-        // Punches sever physics chains (pendulum links + hanging-platform
-        // suspensions). Per-swing dedupe via attackHits with a chain_<id> key.
-        const chainSegs = this.game?.level?._chainSegs;
-        if (chainSegs?.size) {
-          for (const seg of [...chainSegs]) {
-            if (!seg || seg.dead || !seg.body) continue;
-            const body = seg.body;
-            if (!body.velocity || !body.position) continue;
-            const key = `chain_${body.id}`;
-            if (this.attackHits.has(key)) continue;
-            const dxs = body.position.x - cx;
-            const dys = body.position.y - cy;
-            if (dxs * dxs + dys * dys >= radius * radius) continue;
-            this.attackHits.add(key);
-            body.velocity.x += this.facing * 4;
-            body.velocity.y += 2;
-            seg.damage(dmg * 0.5, this);
-          }
+      }
+
+      if (superPunch && this.game?.fx) {
+        this.game.fx.particles.burst(p.position.x, p.position.y, 0, { count: 22, speed: 12, color: 0xffcc33 });
+        this.game.fx.camera.punch(0.45);
+        this.game.hitStop?.(0.1);
+      }
+    }
+
+    // Projectile reflection (was in old _attackTick — preserve).
+    if (this.game?.projectiles) {
+      for (const pr of this.game.projectiles) {
+        if (pr.dead || pr.owner === this) continue;
+        if (!pr.body || pr.stuck) continue;
+        const dx = pr.body.position.x - cx;
+        const dy = pr.body.position.y - cy;
+        if (dx * dx + dy * dy < 0.9 * 0.9) {
+          pr.body.velocity.x = -pr.body.velocity.x * 1.2 + this.facing * 4;
+          pr.body.velocity.y = Math.abs(pr.body.velocity.y) * 0.6 + 4;
+          pr.owner = this;
+          this.game.fx.particles.burst(pr.body.position.x, pr.body.position.y, 0, { count: 8, speed: 6, color: 0xffffff });
+          this.game.fx.camera.punch(0.06);
         }
+      }
+    }
+
+    // Chain severance (preserve).
+    const chainSegs = this.game?.level?._chainSegs;
+    if (chainSegs?.size) {
+      for (const seg of [...chainSegs]) {
+        if (!seg || seg.dead || !seg.body) continue;
+        const body = seg.body;
+        if (!body.velocity || !body.position) continue;
+        const key = `chain_${body.id}`;
+        if (this.attackHits.has(key)) continue;
+        const dxs = body.position.x - cx;
+        const dys = body.position.y - cy;
+        if (dxs * dxs + dys * dys >= radius * radius) continue;
+        this.attackHits.add(key);
+        body.velocity.x += this.facing * 4;
+        body.velocity.y += 2;
+        seg.damage(baseDmg * 0.5, this);
       }
     }
   }
@@ -1016,6 +1283,7 @@ export class Stickman {
       const tNowSlide = performance.now();
       const inSlideCD = tNowSlide < (this._jumpInputCooldown || 0);
       if (this.input.jumpPressed && this.grounded && !inSlideCD) {
+        if (this.charging) this._clearCombatState();
         this.sliding = false;
         this.body.velocity.y = 9.5;
         this.coyote = 0;
@@ -1078,6 +1346,7 @@ export class Stickman {
         const jumpSpeed = 8;
         if (wantJump) {
           if (this.grounded || this.coyote > 0) {
+            if (this.charging) this._clearCombatState();
             // Replace radial component with jumpSpeed outward; preserve tangential.
             const newVR = jumpSpeed;
             this.body.velocity.x = newVT * tx + newVR * ux;
@@ -1089,6 +1358,7 @@ export class Stickman {
             if (this === this.game?.localPlayer) vibrate(12);
             this.grounded = false;
           } else if (this.airJumpsLeft > 0) {
+            if (this.charging) this._clearCombatState();
             this.airJumpsLeft--;
             const newVR = jumpSpeed * 0.95;
             this.body.velocity.x = newVT * tx + newVR * ux;
@@ -1142,6 +1412,7 @@ export class Stickman {
     const inJumpCD = tNowJump < (this._jumpInputCooldown || 0);
     if (this.input.jumpPressed && !inJumpCD) this.jumpBuffer = 0.12;
     if (this.jumpBuffer > 0 && !inJumpCD && (this.coyote > 0 || this.grounded)) {
+      if (this.charging) this._clearCombatState();
       this.body.velocity.y = 11;
       this.jumpBuffer = 0;
       this.coyote = 0;
@@ -1152,6 +1423,7 @@ export class Stickman {
       audio.jump();
       if (this === this.game?.localPlayer) vibrate(12);
     } else if (this.input.jumpPressed && !inJumpCD && this.airJumpsLeft > 0 && !this.grounded) {
+      if (this.charging) this._clearCombatState();
       this.body.velocity.y = 10;
       this.airJumpsLeft--;
       this._jumpLockUntil = tNowJump + 100;
@@ -1214,6 +1486,11 @@ export class Stickman {
     const frozen = performance.now() < this._frozenUntil;
     now.jumpPressed = !frozen && now.jump && !this._prev.jump;
     now.attackPressed = !frozen && now.attack && !this._prev.attack;
+    now.attackReleased = !frozen && !now.attack && this._prev.attack;
+    if (now.attackPressed) this._attackPressedAt = performance.now();
+    now.attackHeldFor = now.attack
+      ? (performance.now() - this._attackPressedAt) / 1000
+      : 0;
     now.grabPressed = !frozen && now.grab && !this._prev.grab;
     now.specialPressed = !frozen && now.special && !this._prev.special;
     now.throwPressed = !frozen && now.throw && !this._prev.throw;
@@ -1300,6 +1577,7 @@ export class Stickman {
 
       // Attack
       if (now.attackPressed) this._doAttack();
+      this._chargeTick(dt);
 
       // Special / weapon alt fire / force powers.
       if (now.specialPressed) {
@@ -1336,6 +1614,19 @@ export class Stickman {
           audio.swing();
         }
       }
+    }
+    if (this.chainTimer > 0) {
+      this.chainTimer -= dt;
+      if (this.chainTimer <= 0) this.chainStep = 0;
+    }
+    // Reset air chain on landing.
+    if (this.grounded && !this.prevGrounded) {
+      this.airChainStep = 0;
+    }
+    // Clear juggle on touchdown or timeout.
+    if (this.juggled && (this.grounded || performance.now() > this.juggledUntil)) {
+      this.juggled = false;
+      this.juggleHits = 0;
     }
     // Attack timing always ticks (so swing finishes even if hit).
     this._attackTick(dt, players);
@@ -1428,7 +1719,9 @@ export class Stickman {
     // existing world-space rig path (`identity` group + absolute coords).
     const rigInLocal = this.state === STATE.DEAD || !!this.game?.level?.curvedGravity;
     const rigPos = rigInLocal ? { x: 0, y: 0, z: 0 } : this.body.position;
-    const stepDur = this._attackStep === 0 ? 0.18 : this._attackStep === 1 ? 0.22 : 0.30;
+    const stepDur = this.moveId && MOVE_TABLE[this.moveId]
+      ? MOVE_TABLE[this.moveId].dur
+      : (this._attackStep === 0 ? 0.18 : this._attackStep === 1 ? 0.22 : 0.30);
     this.rig.update(rigPos, {
       // Normalize against current top speed so anim scale stays right.
       moveX: this.body.velocity.x / 5.5,
@@ -1439,10 +1732,12 @@ export class Stickman {
       attackProgress: this.attackTimer > 0 ? 1 - this.attackTimer / stepDur : 0,
       attackStep: this._attackStep,    // 0=jab, 1=cross, 2=kick
       kicking: this.kicking,
+      moveId: this.moveId,
       armPoseR, armPoseL, holdPos,
       aim,
       crouching: this.crouching,
       sliding: this.sliding,
+      prone: this.crouching && !this.sliding,
       ragdollAmount: ragAmt,
       gumGumPunch: gumGum && this.attackTimer > 0 && !this.weapon,
       // Throw windup ramps 0→1 over the windup window so the rig telegraphs
