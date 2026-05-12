@@ -387,17 +387,18 @@ export class Pistol extends Weapon {
     this.mesh = grp;
   }
   fire(player) {
-    const muzzleX = player.position.x + player.aimDir.x * 0.9;
-    const muzzleY = player.position.y + 0.7 + player.aimDir.y * 0.4;
+    const aim = this.effectiveAimDir ?? player.aimDir;
+    const muzzleX = player.position.x + aim.x * 0.9;
+    const muzzleY = player.position.y + 0.7 + aim.y * 0.4;
     const speed = 38;
     new Projectile(this.game, {
-      x: muzzleX, y: muzzleY, vx: player.aimDir.x * speed, vy: player.aimDir.y * speed,
+      x: muzzleX, y: muzzleY, vx: aim.x * speed, vy: aim.y * speed,
       damage: 20, owner: player, gravity: false, life: 1.6, radius: 0.08,
       color: 0xffcc33, emissive: 0xffaa00, tracer: true,
     });
     audio.shoot();
     const rec = player.grounded ? 0.5 : 1.4;
-    player.body.velocity.x -= player.aimDir.x * rec;
+    player.body.velocity.x -= aim.x * rec;
     this.game.fx.particles.burst(muzzleX, muzzleY, 0, { count: 5, speed: 4, color: 0xffaa33 });
     this.game.fx.camera.punch(0.08);
   }
@@ -411,6 +412,7 @@ export class Shotgun extends Weapon {
     this.fireDelay = 0.6;
     this.aimWeapon = true;
     this.poseRight = 'aim';
+    this.poseLeft = 'support';
     this.ammo = 4;
   }
   _buildMesh() {
@@ -423,7 +425,8 @@ export class Shotgun extends Weapon {
     this.mesh = grp;
   }
   fire(player) {
-    const ax = player.aimDir.x, ay = player.aimDir.y;
+    const aim = this.effectiveAimDir ?? player.aimDir;
+    const ax = aim.x, ay = aim.y;
     for (let i = 0; i < 7; i++) {
       const a = Math.atan2(ay, ax) + rand(-0.2, 0.2);
       const sp = rand(28, 36);
@@ -452,7 +455,15 @@ export class Minigun extends Weapon {
     this.fireDelay = 0.05;
     this.aimWeapon = true;
     this.poseRight = 'aim';
+    this.poseLeft = 'support';
     this.ammo = 60;
+    this.length = 0.85;
+    this._state = 'idle';      // 'idle' | 'spinningUp' | 'firing' | 'spinningDown'
+    this._stateTimer = 0;
+    this._fireAccum = 0;
+    this._barrelAngle = 0;
+    this._spinUpDur = 0.3;
+    this._spinDownDur = 0.5;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -463,62 +474,72 @@ export class Minigun extends Weapon {
     grp.add(body, barrels);
     this.mesh = grp;
   }
+  tryFire(player) {
+    // Press handler — kick into spin-up if currently idle/spin-down.
+    if (this._state === 'idle' || this._state === 'spinningDown') {
+      this._state = 'spinningUp';
+      this._stateTimer = 0;
+    }
+    // No immediate fire — heldTick handles it after spin-up completes.
+  }
+  releaseFire(player) {
+    if (this._state === 'firing' || this._state === 'spinningUp') {
+      this._state = 'spinningDown';
+      this._stateTimer = 0;
+    }
+  }
+  heldTick(dt, player) {
+    this._stateTimer += dt;
+    if (this._state === 'spinningUp') {
+      if (this._stateTimer >= this._spinUpDur) {
+        this._state = 'firing';
+        this._stateTimer = 0;
+        this._fireAccum = 0;
+      }
+    } else if (this._state === 'firing') {
+      this._fireAccum += dt;
+      while (this._fireAccum >= this.fireDelay && this.ammo > 0) {
+        this._fireAccum -= this.fireDelay;
+        this.fire(player);
+        this.ammo--;
+        if (this.ammo <= 0) {
+          this._state = 'idle';
+          player.weapon = null;
+          this.destroy();
+          return;
+        }
+      }
+    } else if (this._state === 'spinningDown') {
+      if (this._stateTimer >= this._spinDownDur) {
+        this._state = 'idle';
+        this._stateTimer = 0;
+      }
+    }
+    // Visual barrel rotation. Skip on lowQ per project perf-tier rule.
+    if (!window.__lowQ) {
+      let rate = 0;
+      if (this._state === 'spinningUp') rate = (this._stateTimer / this._spinUpDur) * 30;
+      else if (this._state === 'firing') rate = 30;
+      else if (this._state === 'spinningDown') rate = 30 * (1 - this._stateTimer / this._spinDownDur);
+      this._barrelAngle += rate * dt;
+      // Find the barrel mesh in the group — _buildMesh adds [body, barrels],
+      // so children[1] is the barrel cylinder.
+      const barrel = this.mesh?.children?.[1];
+      if (barrel) barrel.rotation.x = this._barrelAngle;
+    }
+  }
   fire(player) {
-    const a = Math.atan2(player.aimDir.y, player.aimDir.x) + rand(-0.06, 0.06);
+    const aim = this.effectiveAimDir ?? player.aimDir;
+    const a = Math.atan2(aim.y, aim.x) + rand(-0.06, 0.06);
     new Projectile(this.game, {
-      x: player.position.x + player.aimDir.x * 1, y: player.position.y + 0.7 + player.aimDir.y * 0.3,
+      x: player.position.x + aim.x * 1, y: player.position.y + 0.7 + aim.y * 0.3,
       vx: Math.cos(a) * 42, vy: Math.sin(a) * 42, damage: 9, owner: player,
       gravity: false, life: 1.2, radius: 0.06, color: 0xffcc33, tracer: true,
     });
     const rec = player.grounded ? 0.15 : 0.45;
-    player.body.velocity.x -= player.aimDir.x * rec;
+    player.body.velocity.x -= aim.x * rec;
     audio.shoot();
     this.game.fx.camera.punch(0.04);
-  }
-}
-
-export class Bow extends Weapon {
-  constructor(game) {
-    super(game);
-    this.name = 'Bow';
-    this.icon = '🏹';
-    this.fireDelay = 0.7;
-    this.aimWeapon = true;
-    this.poseRight = 'aim';
-    this.ammo = 10;
-  }
-  _buildMesh() {
-    const grp = new THREE.Group();
-    const arc = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.025, 6, 16, Math.PI), new THREE.MeshLambertMaterial({ color: 0x6a3a18 }));
-    arc.rotation.z = Math.PI / 2; arc.position.x = 0.1;
-    const string = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.01, 0.01), new THREE.MeshLambertMaterial({ color: 0xddd8c8 }));
-    string.position.x = 0.1;
-    grp.add(arc, string);
-    this.mesh = grp;
-  }
-  fire(player) {
-    // Arrow with mild bullet drop — gravity on, scaled down so arc is gentle.
-    // Sticks into terrain or victims on hit (lifecycle handled by Projectile).
-    // Build a slightly more arrow-shaped mesh: shaft + fletching cone.
-    const arrowMat = new THREE.MeshLambertMaterial({ color: 0xc8a85c });
-    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.7, 6), arrowMat);
-    const head = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.12, 6), new THREE.MeshLambertMaterial({ color: 0x666666 }));
-    head.position.y = 0.4;
-    const fletch = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.06, 0.01), new THREE.MeshLambertMaterial({ color: 0xff4d6d }));
-    fletch.position.y = -0.32;
-    const arrowGrp = new THREE.Group();
-    arrowGrp.add(shaft, head, fletch);
-    const proj = new Projectile(this.game, {
-      x: player.position.x + player.aimDir.x * 0.9, y: player.position.y + 0.7 + player.aimDir.y * 0.4,
-      vx: player.aimDir.x * 34, vy: player.aimDir.y * 34, damage: 36, owner: player,
-      gravity: true, gravityScale: 0.45, life: 3, radius: 0.06, color: 0xc8a85c, tracer: true,
-      tracerColor: 0xeed28c,
-      sticky: true, stickLife: 7,
-      mesh: arrowGrp,
-    });
-    // Spin so visual arrow aligns with velocity each frame.
-    proj._orientToVel = true;
-    audio.shoot();
   }
 }
 
@@ -608,6 +629,7 @@ export class RPG extends Weapon {
     this.fireDelay = 1.2;
     this.aimWeapon = true;
     this.poseRight = 'aim';
+    this.poseLeft = 'support';
     this.ammo = 1;
   }
   _buildMesh() {
@@ -620,17 +642,18 @@ export class RPG extends Weapon {
     this.mesh = grp;
   }
   fire(player) {
+    const aim = this.effectiveAimDir ?? player.aimDir;
     new Projectile(this.game, {
-      x: player.position.x + player.aimDir.x * 0.9, y: player.position.y + 0.7 + player.aimDir.y * 0.3,
-      vx: player.aimDir.x * 28, vy: player.aimDir.y * 28, damage: 0, owner: player,
+      x: player.position.x + aim.x * 0.9, y: player.position.y + 0.7 + aim.y * 0.3,
+      vx: aim.x * 28, vy: aim.y * 28, damage: 0, owner: player,
       gravity: false, life: 2.2, radius: 0.15,
       explosive: true, explodeOnContact: true, color: 0xff4d6d, emissive: 0xaa0030,
       mesh: { geometry: new THREE.ConeGeometry(0.13, 0.5, 8).rotateZ(-Math.PI / 2), material: new THREE.MeshLambertMaterial({ color: 0xff4d6d, emissive: 0xff4d6d, emissiveIntensity: 0.5 }) },
     });
     // RPG recoil — meaningful kick on ground, big in air for rocket-jumps.
     const rec = player.grounded ? 4 : 8;
-    player.body.velocity.x -= player.aimDir.x * rec;
-    if (!player.grounded) player.body.velocity.y -= player.aimDir.y * 5;
+    player.body.velocity.x -= aim.x * rec;
+    if (!player.grounded) player.body.velocity.y -= aim.y * 5;
     audio.shoot(); audio.explode();
     this.game.fx.camera.punch(0.4);
   }
@@ -648,6 +671,7 @@ export class SniperRifle extends Weapon {
     this.fireDelay = 1.0;
     this.aimWeapon = true;
     this.poseRight = 'aim';
+    this.poseLeft = 'support';
     this.ammo = 3;
     this._laser = null;
     this._laserDot = null;
@@ -673,14 +697,13 @@ export class SniperRifle extends Weapon {
     this.mesh = grp;
   }
   _muzzleWorld(player) {
-    // Muzzle position in WORLD coords. Anchored to the player's shoulder
-    // with a small forward-of-facing offset; the laser then fans out along
-    // aimDir from there. Decoupling the muzzle origin from the vertical
-    // aim component keeps it from sinking below the player's feet (and
-    // into the floor) when aiming straight down.
+    // Anchor the laser/raycast origin under the barrel tip so the red dot
+    // visibly emits from the gun rather than the shooter's shoulder.
+    // Decoupled from aimDir.y so straight-down aim doesn't sink the origin
+    // into the floor.
     const facing = player.facing || 1;
-    const baseX = player.position.x + facing * 0.4;
-    const baseY = player.position.y + 0.55;
+    const baseX = player.position.x + facing * 0.55;
+    const baseY = player.position.y + 0.45;
     return { x: baseX, y: baseY };
   }
   _castShot(player, maxRange = 60) {
@@ -690,7 +713,8 @@ export class SniperRifle extends Weapon {
     // is the real hit; if no player ray hit before the world ray, line of
     // sight is blocked by cover.
     const mz = this._muzzleWorld(player);
-    const ax = player.aimDir.x, ay = player.aimDir.y;
+    const aim = this.effectiveAimDir ?? player.aimDir;
+    const ax = aim.x, ay = aim.y;
     const from = { x: mz.x, y: mz.y, z: 0 };
     const to = { x: mz.x + ax * maxRange, y: mz.y + ay * maxRange, z: 0 };
     const worldHit = this.game.physics.raycast(from, to, { mask: COL_GROUPS.WORLD | COL_GROUPS.PROP });
@@ -772,8 +796,9 @@ export class SniperRifle extends Weapon {
     this._laserDot.scale.setScalar(dotScale);
   }
   fire(player) {
+    const aim = this.effectiveAimDir ?? player.aimDir;
     const cast = this._castShot(player);
-    const ax = player.aimDir.x, ay = player.aimDir.y;
+    const ax = aim.x, ay = aim.y;
     audio.shoot(); audio.beep(220, 0.18, 'sawtooth', 0.4);
     this._tracerTime = 0.18;
     // Big recoil — air recoil is huge to enable rocket-jump-style boosts.
@@ -2329,7 +2354,7 @@ export class ForceChokePower {
 
 // Catalog of all weapons and weighted pool for spawns.
 export const WEAPON_CLASSES = [
-  Sword, Bat, Pistol, Shotgun, Minigun, Bow, Grenade, RPG, RubberChicken, Boomerang, FishSlap,
+  Sword, Bat, Pistol, Shotgun, Minigun, Grenade, RPG, RubberChicken, Boomerang, FishSlap,
   FlameSword, IceSword, Kamehameha, Nuke, LightningStaff, Lightsaber,
   Longsword, Mace, WarHammer, Halberd,
   SniperRifle, ThrowingKnives, StickyBomb,
@@ -2357,7 +2382,6 @@ export const SPAWN_TABLE = [
   { cls: Pistol,        w: 14,  id: 'pistol',       label: 'Pistol',        cat: 'ranged' },
   { cls: Shotgun,       w: 9,   id: 'shotgun',      label: 'Shotgun',       cat: 'ranged' },
   { cls: Minigun,       w: 5,   id: 'minigun',      label: 'Minigun',       cat: 'ranged' },
-  { cls: Bow,           w: 8,   id: 'bow',          label: 'Bow',           cat: 'ranged' },
   { cls: Grenade,       w: 8,   id: 'grenade',      label: 'Grenade',       cat: 'ranged' },
   { cls: RPG,           w: 4,   id: 'rpg',          label: 'RPG',           cat: 'ranged' },
   { cls: SniperRifle,   w: 4,   id: 'sniper',       label: 'Sniper Rifle',  cat: 'ranged' },
