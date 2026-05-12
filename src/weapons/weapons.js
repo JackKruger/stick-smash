@@ -413,17 +413,34 @@ export class Shotgun extends Weapon {
     this.fireDelay = 0.6;
     this.aimWeapon = true;
     this.poseRight = 'aim';
-    this.poseLeft = 'support';
+    this.poseLeft = null;
     this.ammo = 4;
-    this.barrelOffset = 0.85;
+    this.barrelOffset = 0.90;
   }
   _buildMesh() {
-    const g = new THREE.BoxGeometry(0.85, 0.16, 0.12);
-    const m = new THREE.MeshLambertMaterial({ color: 0x553322 });
-    const main = new THREE.Mesh(g, m); main.position.x = 0.4;
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.85, 10), new THREE.MeshLambertMaterial({ color: 0x222233 }));
-    barrel.rotation.z = Math.PI / 2; barrel.position.x = 0.4; barrel.position.y = 0.05;
-    const grp = new THREE.Group(); grp.add(main, barrel);
+    const grp = new THREE.Group();
+    // Pump-action style: receiver + double barrels + wood furniture
+    const recv = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.13, 0.09), new THREE.MeshLambertMaterial({ color: 0x2a2226 }));
+    recv.position.x = 0.18;
+    // Twin barrels stacked
+    const barrelMat = new THREE.MeshLambertMaterial({ color: 0x14141a });
+    const barrelTop = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.65, 10), barrelMat);
+    barrelTop.rotation.z = Math.PI / 2; barrelTop.position.set(0.55, 0.045, 0);
+    const barrelBot = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.65, 10), barrelMat);
+    barrelBot.rotation.z = Math.PI / 2; barrelBot.position.set(0.55, -0.045, 0);
+    // Pump handle (forearm) — wood
+    const pump = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.09, 0.11), new THREE.MeshLambertMaterial({ color: 0x4a2818 }));
+    pump.position.set(0.45, -0.08, 0);
+    // Stock — wood, slight downward angle
+    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.13, 0.09), new THREE.MeshLambertMaterial({ color: 0x3a2010 }));
+    stock.position.set(-0.15, -0.06, 0); stock.rotation.z = -0.12;
+    // Trigger guard arc
+    const guard = new THREE.Mesh(new THREE.TorusGeometry(0.04, 0.012, 6, 12, Math.PI), new THREE.MeshLambertMaterial({ color: 0x2a2226 }));
+    guard.rotation.z = -Math.PI / 2; guard.position.set(0.14, -0.08, 0);
+    // Front bead sight
+    const sight = new THREE.Mesh(new THREE.SphereGeometry(0.012, 6, 5), new THREE.MeshLambertMaterial({ color: 0xddccaa }));
+    sight.position.set(0.85, 0.085, 0);
+    grp.add(recv, barrelTop, barrelBot, pump, stock, guard, sight);
     this.mesh = grp;
   }
   fire(player) {
@@ -458,7 +475,7 @@ export class Minigun extends Weapon {
     this.fireDelay = 0.05;
     this.aimWeapon = true;
     this.poseRight = 'aim';
-    this.poseLeft = 'support';
+    this.poseLeft = null;
     this.ammo = 60;
     this.length = 0.85;
     this.barrelOffset = 0.90;
@@ -471,12 +488,39 @@ export class Minigun extends Weapon {
   }
   _buildMesh() {
     const grp = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.22, 0.18), new THREE.MeshLambertMaterial({ color: 0x444455 }));
-    body.position.x = 0.35;
-    const barrels = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.5, 8), new THREE.MeshLambertMaterial({ color: 0x222233 }));
-    barrels.rotation.z = Math.PI / 2; barrels.position.x = 0.7;
-    grp.add(body, barrels);
+    // Receiver — chunky main body
+    const recv = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.28, 0.22), new THREE.MeshLambertMaterial({ color: 0x33333a }));
+    recv.position.x = 0.28;
+    // Six rotating barrels arranged in a hex pattern
+    const barrelMat = new THREE.MeshLambertMaterial({ color: 0x141418 });
+    const barrels = new THREE.Group();
+    for (let i = 0; i < 6; i++) {
+      const ang = (i / 6) * Math.PI * 2;
+      const by = Math.sin(ang) * 0.08;
+      const bz = Math.cos(ang) * 0.08;
+      const b = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.6, 6), barrelMat);
+      b.rotation.z = Math.PI / 2;
+      b.position.set(0.7, by, bz);
+      barrels.add(b);
+    }
+    // Hub at front holding the barrels together
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.06, 8), new THREE.MeshLambertMaterial({ color: 0x222229 }));
+    hub.rotation.z = Math.PI / 2; hub.position.set(0.99, 0, 0);
+    // Ammo drum (right side)
+    const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.16, 12), new THREE.MeshLambertMaterial({ color: 0x44443c }));
+    drum.rotation.z = Math.PI / 2; drum.position.set(0.18, -0.08, -0.16);
+    // Belt feed link from drum to receiver
+    const feed = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.06, 0.08), new THREE.MeshLambertMaterial({ color: 0x2a2a30 }));
+    feed.position.set(0.16, -0.05, -0.07);
+    // Pistol grip (rear)
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.22, 0.09), new THREE.MeshLambertMaterial({ color: 0x222222 }));
+    grip.position.set(0.05, -0.2, 0); grip.rotation.z = -0.18;
+    // Front handle (forward grip)
+    const fgrip = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.18, 0.08), new THREE.MeshLambertMaterial({ color: 0x222222 }));
+    fgrip.position.set(0.5, -0.22, 0);
+    grp.add(recv, barrels, hub, drum, feed, grip, fgrip);
     this.mesh = grp;
+    this._barrelGroup = barrels;
   }
   tryFire(player) {
     // Press handler — kick into spin-up if currently idle/spin-down.
@@ -526,9 +570,8 @@ export class Minigun extends Weapon {
       else if (this._state === 'firing') rate = 30;
       else if (this._state === 'spinningDown') rate = 30 * (1 - this._stateTimer / this._spinDownDur);
       this._barrelAngle += rate * dt;
-      // Find the barrel mesh in the group — _buildMesh adds [body, barrels],
-      // so children[1] is the barrel cylinder.
-      const barrel = this.mesh?.children?.[1];
+      // Barrel group rotates around its own axis (set by _buildMesh).
+      const barrel = this._barrelGroup;
       if (barrel) barrel.rotation.x = this._barrelAngle;
     }
   }
@@ -541,10 +584,11 @@ export class Minigun extends Weapon {
       vx: Math.cos(a) * 42, vy: Math.sin(a) * 42, damage: 9, owner: player,
       gravity: false, life: 1.2, radius: 0.06, color: 0xffcc33, tracer: true,
     });
-    const rec = player.grounded ? 0.15 : 0.45;
+    const rec = player.grounded ? 1.2 : 3.5;       // hard to control, like a real minigun
     player.body.velocity.x -= aim.x * rec;
+    if (!player.grounded) player.body.velocity.y -= aim.y * 1.5;  // air = even pushier
     audio.shoot();
-    this.game.fx.camera.punch(0.04);
+    this.game.fx.camera.punch(0.12);                // ~3× cam shake
   }
 }
 
@@ -556,7 +600,7 @@ export class SMG extends Weapon {
     this.fireDelay = 0.06;
     this.aimWeapon = true;
     this.poseRight = 'aim';
-    this.poseLeft = 'support';
+    this.poseLeft = null;
     this.ammo = 60;
     this.length = 0.55;
     this.barrelOffset = 0.55;
@@ -621,7 +665,7 @@ export class AssaultRifle extends Weapon {
     this._burstInterval = 0.05;
     this.aimWeapon = true;
     this.poseRight = 'aim';
-    this.poseLeft = 'support';
+    this.poseLeft = null;
     this.ammo = 30;
     this.length = 0.95;
     this.barrelOffset = 1.00;
@@ -774,25 +818,25 @@ export class Crossbow extends Weapon {
     this.fireDelay = 0.9;
     this.aimWeapon = true;
     this.poseRight = 'aim';
-    this.poseLeft = 'support';   // 2H
+    this.poseLeft = null;        // 1H outstretched
     this.ammo = 8;
-    this.length = 1.2;
-    this.barrelOffset = 0.85;
+    this.length = 1.6;
+    this.barrelOffset = 1.1;
     this._postFireTimer = 0;
   }
   _buildMesh() {
     const grp = new THREE.Group();
-    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.11, 0.10), new THREE.MeshLambertMaterial({ color: 0x3a2410 }));
-    stock.position.x = 0.18;
+    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.14, 0.13), new THREE.MeshLambertMaterial({ color: 0x3a2410 }));
+    stock.position.x = 0.25;
     // Horizontal limbs (NOT a vertical bow arc) — long & wide
-    const limbU = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.5, 0.06), new THREE.MeshLambertMaterial({ color: 0x4a2a14 }));
-    limbU.position.set(0.32, 0.07, 0); limbU.rotation.z = 0.5;
-    const limbD = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.5, 0.06), new THREE.MeshLambertMaterial({ color: 0x4a2a14 }));
-    limbD.position.set(0.32, -0.07, 0); limbD.rotation.z = -0.5;
-    const string = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.012, 0.012), new THREE.MeshLambertMaterial({ color: 0xddd8c8 }));
+    const limbU = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.65, 0.06), new THREE.MeshLambertMaterial({ color: 0x4a2a14 }));
+    limbU.position.set(0.45, 0.09, 0); limbU.rotation.z = 0.5;
+    const limbD = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.65, 0.06), new THREE.MeshLambertMaterial({ color: 0x4a2a14 }));
+    limbD.position.set(0.45, -0.09, 0); limbD.rotation.z = -0.5;
+    const string = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.012, 0.012), new THREE.MeshLambertMaterial({ color: 0xddd8c8 }));
     string.position.set(0.05, 0, 0);
-    const bolt = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.028, 0.028), new THREE.MeshLambertMaterial({ color: 0x202024 }));
-    bolt.position.set(0.32, 0.06, 0);
+    const bolt = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.035, 0.035), new THREE.MeshLambertMaterial({ color: 0x202024 }));
+    bolt.position.set(0.45, 0.06, 0);
     grp.add(stock, limbU, limbD, string, bolt);
     this.mesh = grp;
     this._stringMesh = string;
@@ -803,11 +847,11 @@ export class Crossbow extends Weapon {
     const sp = 48;  // 1.6× the old bow's 30
     const boltMesh = (() => {
       const g = new THREE.Group();
-      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.42, 6), new THREE.MeshLambertMaterial({ color: 0x202024 }));
-      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.08, 6), new THREE.MeshLambertMaterial({ color: 0x666674 }));
-      tip.position.y = 0.25;
-      const fletch = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.005), new THREE.MeshLambertMaterial({ color: 0xddccaa }));
-      fletch.position.y = -0.18;
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.6, 6), new THREE.MeshLambertMaterial({ color: 0x202024 }));
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.12, 6), new THREE.MeshLambertMaterial({ color: 0x666674 }));
+      tip.position.y = 0.36;
+      const fletch = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 0.005), new THREE.MeshLambertMaterial({ color: 0xddccaa }));
+      fletch.position.y = -0.26;
       g.add(shaft, tip, fletch);
       return g;
     })();
@@ -846,7 +890,7 @@ export class Flamethrower extends Weapon {
     this.fireDelay = 0.04;       // 25Hz fire rate while held
     this.aimWeapon = true;
     this.poseRight = 'aim';
-    this.poseLeft = 'support';
+    this.poseLeft = null;
     this.ammo = 80;              // ~3.2s sustained
     this.length = 0.65;
     this.barrelOffset = 0.55;
@@ -957,6 +1001,30 @@ export class DualPistols extends Weapon {
     grp.add(this._meshR);
     grp.add(this._meshL);
     this.mesh = grp;
+  }
+  // Compact children back into local-space positions around the parent
+  // origin. Held updateMesh sets each child to a WORLD position (handR /
+  // handL); without recentering, throwing the weapon would make both
+  // pistols orbit the parent in a huge circle as the body spins.
+  _packForWorld() {
+    if (this._meshR) {
+      this._meshR.position.set(0.0, 0.08, 0);
+      this._meshR.rotation.set(0, 0, 0);
+      this._meshR.scale.set(1, 1, 1);
+    }
+    if (this._meshL) {
+      this._meshL.position.set(0.0, -0.08, 0);
+      this._meshL.rotation.set(0, 0, 0);
+      this._meshL.scale.set(1, 1, 1);
+    }
+  }
+  spawnAt(x, y, z = 0) {
+    this._packForWorld();
+    return super.spawnAt(x, y, z);
+  }
+  dropAt(pos, vel) {
+    this._packForWorld();
+    return super.dropAt(pos, vel);
   }
   updateMesh(player) {
     // Override: don't run base wall-reorient (would conflict with two
@@ -1093,7 +1161,7 @@ export class RPG extends Weapon {
     this.fireDelay = 1.2;
     this.aimWeapon = true;
     this.poseRight = 'aim';
-    this.poseLeft = 'support';
+    this.poseLeft = null;
     this.ammo = 1;
     this.barrelOffset = 0.85;
   }
@@ -1137,7 +1205,7 @@ export class SniperRifle extends Weapon {
     this.fireDelay = 1.0;
     this.aimWeapon = true;
     this.poseRight = 'aim';
-    this.poseLeft = 'support';
+    this.poseLeft = null;
     this.ammo = 3;
     this.barrelOffset = 1.27;
     this._laser = null;
@@ -1343,11 +1411,11 @@ export class SniperRifle extends Weapon {
 // Throwing knives — fast, light, sticky. High rate of fire, low per-hit dmg.
 // Niche between bow (slow, heavy) and pistol (fast, no stick) — sticks into
 // terrain and players for 5s, leaving visible record of recent fights.
-export class ThrowingKnives extends Weapon {
+export class Shurikens extends Weapon {
   constructor(game) {
     super(game);
-    this.name = 'Knives';
-    this.icon = '🔪';
+    this.name = 'Shurikens';
+    this.icon = '⭐';
     this.fireDelay = 0.18;
     this.aimWeapon = true;
     this.poseRight = 'aim';
@@ -1355,29 +1423,29 @@ export class ThrowingKnives extends Weapon {
   }
   _buildMesh() {
     const grp = new THREE.Group();
-    const blade = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.32, 4), new THREE.MeshLambertMaterial({ color: 0xddddee }));
-    blade.rotation.z = -Math.PI / 2; blade.position.x = 0.25;
-    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.05, 0.05), new THREE.MeshLambertMaterial({ color: 0x332010 }));
-    grip.position.x = 0.05;
-    grp.add(blade, grip);
+    const mat = new THREE.MeshLambertMaterial({ color: 0x888899, emissive: 0x222233 });
+    const armA = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.025, 0.025), mat);
+    const armB = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.18, 0.025), mat);
+    armA.position.x = 0.1; armB.position.x = 0.1;
+    grp.add(armA, armB);
     this.mesh = grp;
   }
   fire(player) {
     const ax = player.aimDir.x, ay = player.aimDir.y;
-    const knifeMat = new THREE.MeshLambertMaterial({ color: 0xddddee });
-    const blade = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.34, 4), knifeMat);
-    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.04, 0.04), new THREE.MeshLambertMaterial({ color: 0x332010 }));
-    grip.position.y = -0.2;
-    blade.position.y = 0.05;
+    // 4-pointed throwing star: two crossed thin boxes
+    const mat = new THREE.MeshLambertMaterial({ color: 0x888899, emissive: 0x222233 });
+    const armA = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.03, 0.03), mat);
+    const armB = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.22, 0.03), mat);
     const grp = new THREE.Group();
-    grp.add(blade, grip);
+    grp.add(armA, armB);
     const proj = new Projectile(this.game, {
       x: player.position.x + ax * 0.7, y: player.position.y + 0.7 + ay * 0.3,
       vx: ax * 38, vy: ay * 38, damage: 22, owner: player,
       gravity: true, gravityScale: 0.2, life: 1.6, radius: 0.05,
-      sticky: true, stickLife: 5, mesh: grp, color: 0xddddee,
+      sticky: true, stickLife: 5, mesh: grp, color: 0x888899,
     });
-    proj._orientToVel = true;
+    // Spin freely as it flies — do NOT orient to velocity.
+    proj.body.angularVelocity.set(0, 0, 25);
     audio.beep(900, 0.05, 'square', 0.18);
     audio.swing();
   }
@@ -2831,7 +2899,7 @@ export const WEAPON_CLASSES = [
   Sword, Bat, Pistol, Shotgun, Minigun, SMG, AssaultRifle, Revolver, Crossbow, Flamethrower, DualPistols, Grenade, RPG, RubberChicken, Boomerang, FishSlap,
   FlameSword, IceSword, Kamehameha, Nuke, LightningStaff, Lightsaber,
   Longsword, Mace, WarHammer, Halberd,
-  SniperRifle, ThrowingKnives, StickyBomb,
+  SniperRifle, Shurikens, StickyBomb,
   HulkHands,
 ];
 export const PICKUP_CLASSES = [
@@ -2859,7 +2927,7 @@ export const SPAWN_TABLE = [
   { cls: Grenade,       w: 8,   id: 'grenade',      label: 'Grenade',       cat: 'ranged' },
   { cls: RPG,           w: 4,   id: 'rpg',          label: 'RPG',           cat: 'ranged' },
   { cls: SniperRifle,   w: 4,   id: 'sniper',       label: 'Sniper Rifle',  cat: 'ranged' },
-  { cls: ThrowingKnives,w: 6,   id: 'knives',       label: 'Throwing Knives', cat: 'ranged' },
+  { cls: Shurikens,     w: 6,   id: 'shurikens',    label: 'Shurikens',     cat: 'ranged' },
   { cls: StickyBomb,    w: 4,   id: 'sticky',       label: 'Sticky Bomb',   cat: 'ranged' },
   { cls: SMG,           w: 10,  id: 'smg',          label: 'SMG',           cat: 'ranged' },
   { cls: AssaultRifle,  w: 9,   id: 'assaultrifle', label: 'Assault Rifle', cat: 'ranged' },
