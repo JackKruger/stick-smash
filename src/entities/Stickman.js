@@ -189,6 +189,9 @@ export class Stickman {
     this.attackCooldown = 0;
     this.attackHits = new Set();  // bodies hit this swing
     this.hitstun = 0;
+    // Sub-B force features
+    this._impulseFrameBudget = 0;      // resets to 0 at start of each update()
+    this._impulseStunUntil = 0;        // performance.now() timestamp; input damped while < now
     // Combat — combo state
     this.moveId = null;          // 'jab'|'cross'|'hook'|'knee'|'spinBack'
                                   // |'heavyNeutral'|'heavyUp'|'heavyDown'|'heavyForward'|'heavyBack'
@@ -338,6 +341,39 @@ export class Stickman {
     this.hitstun = Math.max(this.hitstun, stun);
   }
 
+  // Additive velocity impulse with per-call and per-frame caps. Used by Sub-B
+  // force features (punch-boost, throw-boost, recoil-jump, hit-reaction).
+  // Per-call cap stops a single huge impulse from teleporting the body.
+  // Per-frame budget stops multi-hit chains (minigun pellets, dual pistols)
+  // from accumulating to launch velocity.
+  applyImpulse(vx, vy, opts = {}) {
+    if (this.state === STATE.DEAD) return;
+    const cap = opts.cap ?? 18;
+    const mag = Math.hypot(vx, vy);
+    let sx = vx, sy = vy;
+    if (mag > cap) {
+      const f = cap / mag;
+      sx *= f; sy *= f;
+    }
+    const budgetMax = 26;
+    const used = this._impulseFrameBudget;
+    if (used >= budgetMax) return;
+    const remaining = budgetMax - used;
+    const newMag = Math.hypot(sx, sy);
+    if (newMag > remaining) {
+      const f = remaining / newMag;
+      sx *= f; sy *= f;
+    }
+    this._impulseFrameBudget += Math.hypot(sx, sy);
+    this.body.wakeUp();
+    this.body.velocity.x += sx;
+    this.body.velocity.y += sy;
+    if (opts.stunMs) {
+      const until = performance.now() + opts.stunMs;
+      if (until > this._impulseStunUntil) this._impulseStunUntil = until;
+    }
+  }
+
   takeDamage(amount, opts = {}) {
     if (this.state === STATE.DEAD) return false;
     if (this.invuln > 0) return false;
@@ -384,6 +420,20 @@ export class Stickman {
     if (opts.kb) {
       this.applyKnockback(opts.kb.x, opts.kb.y, opts.stun ?? 0.25);
       this.rig.flinch?.(opts.kb.x, clamp(amount / 25, 0.4, 1.5));
+      // Sub-B hit-reaction — additive impulse on top of applyKnockback.
+      // Magnitude scales with damage × attacker weapon's hitKnockback. Y
+      // dampened + small +2 uppercut for Stick-Fight signature read.
+      // 120ms input damping via _impulseStunUntil (handled in update).
+      if (window.__forceFeatures?.hitReaction !== 0) {
+        const hk = opts.attacker?.weapon?.hitKnockback ?? 1.0;
+        const KNOCKBACK_SCALE = 0.6;
+        const mag = amount * hk * KNOCKBACK_SCALE;
+        if (mag > 0) {
+          const dirLen = Math.hypot(opts.kb.x, opts.kb.y) || 1;
+          const ux = opts.kb.x / dirLen, uy = opts.kb.y / dirLen;
+          this.applyImpulse(ux * mag, uy * mag * 0.4 + 2, { stunMs: 120 });
+        }
+      }
     }
     // Launch flag from combat MOVE_TABLE — heavy/launcher hits ragdoll the
     // victim regardless of remaining HP. Pure stagger lights leave the
@@ -903,6 +953,13 @@ export class Stickman {
       w.body.angularVelocity.set(0, 0, this.facing * 18);
       w.dropCooldown = 0.5;     // can't pick back up immediately
       w._thrownBy = this;
+      // Sub-B throw-boost — player gets counter-impulse opposite throw dir.
+      if (window.__forceFeatures?.throw !== 0) {
+        const mag = w.throwImpulse ?? 0;
+        if (mag > 0) {
+          this.applyImpulse(-dx * mag, -(dy * mag));
+        }
+      }
       // Damage on impact via collide handler.
       const onHit = (e) => {
         const other = e.body;
@@ -1250,6 +1307,19 @@ export class Stickman {
         stun,
         launch: launch || superPunch,
       });
+      // Sub-B punch-boost — attacker gets opposite impulse on melee connect.
+      // Magnitude from weapon.meleeRecoilImpulse (or FIST_RECOIL for unarmed).
+      // Direction is opposite the strike (kb points TOWARD victim).
+      if (window.__forceFeatures?.punch !== 0) {
+        const FIST_RECOIL = 4;
+        const mag = this.weapon?.meleeRecoilImpulse ?? FIST_RECOIL;
+        if (mag > 0) {
+          const dirLen = Math.hypot(kbX, kbY) || 1;
+          const ux = kbX / dirLen, uy = kbY / dirLen;
+          // Y component scaled 0.6 so punch-down doesn't catapult straight up.
+          this.applyImpulse(-ux * mag, -uy * mag * 0.6);
+        }
+      }
       this.attackHits.add(p.id);
 
       // Upward-launcher → start juggle on victim.
@@ -1385,7 +1455,9 @@ export class Stickman {
   _move(dt) {
     const now = performance.now();
     const frozen = now < this._frozenUntil;
-    const moveX = frozen ? 0 : this.input.moveX;
+    // Sub-B hit-reaction: input damped (not removed) while _impulseStunUntil active.
+    const inputAuthority = (now < this._impulseStunUntil) ? 0.3 : 1.0;
+    const moveX = frozen ? 0 : this.input.moveX * inputAuthority;
     const boosted = now < this.speedBoostUntil;
     const flying = now < this.flightUntil;
     const crouchInput = !flying && this.grounded && this.input.moveY < -0.4;
@@ -1589,6 +1661,7 @@ export class Stickman {
   }
 
   update(dt, ctx) {
+    this._impulseFrameBudget = 0;
     this._dt = dt;
     const { players, level } = ctx;
 

@@ -20,6 +20,8 @@ export class Sword extends Weapon {
     this.swingTimer = 0;
     this.hits = new Set();
     this.tileSwingDmg = 12;
+    this.throwImpulse = 4;
+    this.meleeRecoilImpulse = 5;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -77,6 +79,8 @@ export class Bat extends Weapon {
     this.swingTimer = 0;
     this.hits = new Set();
     this.tileSwingDmg = 10;
+    this.throwImpulse = 4;
+    this.meleeRecoilImpulse = 5;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -132,6 +136,9 @@ export class Longsword extends Weapon {
     this.swingTimer = 0;
     this.hits = new Set();
     this.tileSwingDmg = 18;
+    this.throwImpulse = 5;
+    this.meleeRecoilImpulse = 7;
+    this.hitKnockback = 1.2;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -191,6 +198,9 @@ export class Mace extends Weapon {
     this.swingTimer = 0;
     this.hits = new Set();
     this.tileSwingDmg = 16;
+    this.throwImpulse = 6;
+    this.meleeRecoilImpulse = 9;
+    this.hitKnockback = 1.6;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -254,6 +264,9 @@ export class WarHammer extends Weapon {
     this.swingTimer = 0;
     this.hits = new Set();
     this.tileSwingDmg = 25;
+    this.throwImpulse = 6;
+    this.meleeRecoilImpulse = 9;
+    this.hitKnockback = 1.6;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -314,6 +327,9 @@ export class Halberd extends Weapon {
     this.swingTimer = 0;
     this.hits = new Set();
     this.tileSwingDmg = 16;
+    this.throwImpulse = 6;
+    this.meleeRecoilImpulse = 9;
+    this.hitKnockback = 1.6;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -378,6 +394,8 @@ export class Pistol extends Weapon {
     this.poseRight = 'aim';
     this.ammo = 12;
     this.barrelOffset = 0.55;
+    this.recoilImpulse = 2;
+    this.throwImpulse = 4;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -398,8 +416,15 @@ export class Pistol extends Weapon {
       color: 0xffcc33, emissive: 0xffaa00, tracer: true,
     });
     audio.shoot();
-    const rec = player.grounded ? 0.5 : 1.4;
-    player.body.velocity.x -= aim.x * rec;
+    // Sub-B recoil-jump — opposite aim direction. Y kept full (no damping)
+    // so shooting straight down recoil-jumps straight up — the whole
+    // point of the mechanic.
+    if (window.__forceFeatures?.recoil !== 0) {
+      const recoilMag = this.recoilImpulse;
+      if (recoilMag > 0) {
+        player.applyImpulse(-aim.x * recoilMag, -aim.y * recoilMag);
+      }
+    }
     this.game.fx.particles.burst(mz.x, mz.y, 0, { count: 5, speed: 4, color: 0xffaa33 });
     this.game.fx.camera.punch(0.08);
   }
@@ -416,6 +441,9 @@ export class Shotgun extends Weapon {
     this.poseLeft = null;
     this.ammo = 4;
     this.barrelOffset = 0.90;
+    this.recoilImpulse = 14;
+    this.throwImpulse = 5;
+    this.hitKnockback = 2.0;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -457,10 +485,15 @@ export class Shotgun extends Weapon {
         color: 0xffaa33, tracer: true,
       });
     }
-    // Strong recoil — shotgun blast. Tame on ground, big in air.
-    const rec = player.grounded ? 3 : 8;
-    player.body.velocity.x -= ax * rec;
-    if (!player.grounded) player.body.velocity.y -= ay * 4;
+    // Sub-B recoil-jump — opposite aim direction. Y kept full (no damping)
+    // so shooting straight down recoil-jumps straight up — the whole
+    // point of the mechanic.
+    if (window.__forceFeatures?.recoil !== 0) {
+      const recoilMag = this.recoilImpulse;
+      if (recoilMag > 0) {
+        player.applyImpulse(-aim.x * recoilMag, -aim.y * recoilMag);
+      }
+    }
     audio.shoot(); audio.shoot();
     this.game.fx.particles.burst(mz.x, mz.y, 0, { count: 12, speed: 6, color: 0xff8833 });
     this.game.fx.camera.punch(0.3);
@@ -485,6 +518,9 @@ export class Minigun extends Weapon {
     this._barrelAngle = 0;
     this._spinUpDur = 0.3;
     this._spinDownDur = 0.5;
+    this.recoilImpulse = 0.8;
+    this.throwImpulse = 6;
+    this.hitKnockback = 0.9;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -584,9 +620,15 @@ export class Minigun extends Weapon {
       vx: Math.cos(a) * 42, vy: Math.sin(a) * 42, damage: 9, owner: player,
       gravity: false, life: 1.2, radius: 0.06, color: 0xffcc33, tracer: true,
     });
-    const rec = player.grounded ? 1.2 : 3.5;       // hard to control, like a real minigun
-    player.body.velocity.x -= aim.x * rec;
-    if (!player.grounded) player.body.velocity.y -= aim.y * 1.5;  // air = even pushier
+    // Sub-B recoil-jump — opposite aim direction. Y kept full (no damping)
+    // so shooting straight down recoil-jumps straight up — the whole
+    // point of the mechanic.
+    if (window.__forceFeatures?.recoil !== 0) {
+      const recoilMag = this.recoilImpulse;
+      if (recoilMag > 0) {
+        player.applyImpulse(-aim.x * recoilMag, -aim.y * recoilMag);
+      }
+    }
     audio.shoot();
     this.game.fx.camera.punch(0.12);                // ~3× cam shake
   }
@@ -606,6 +648,9 @@ export class SMG extends Weapon {
     this.barrelOffset = 0.55;
     this._held = false;
     this._fireAccum = 0;
+    this.recoilImpulse = 1.2;
+    this.throwImpulse = 4;
+    this.hitKnockback = 0.8;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -652,6 +697,15 @@ export class SMG extends Weapon {
       color: 0xffcc66, tracer: true,
     });
     audio.shoot();
+    // Sub-B recoil-jump — opposite aim direction. Y kept full (no damping)
+    // so shooting straight down recoil-jumps straight up — the whole
+    // point of the mechanic.
+    if (window.__forceFeatures?.recoil !== 0) {
+      const recoilMag = this.recoilImpulse;
+      if (recoilMag > 0) {
+        player.applyImpulse(-aim.x * recoilMag, -aim.y * recoilMag);
+      }
+    }
     this.game.fx.camera.punch(0.025);
   }
 }
@@ -672,6 +726,9 @@ export class AssaultRifle extends Weapon {
     this._burstRemaining = 0;
     this._burstAccum = 0;
     this._burstShotIndex = 0;
+    this.recoilImpulse = 3;
+    this.throwImpulse = 4;
+    this.hitKnockback = 1.1;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -721,6 +778,15 @@ export class AssaultRifle extends Weapon {
       color: 0xffeecc, tracer: true,
     });
     audio.shoot();
+    // Sub-B recoil-jump — opposite aim direction. Y kept full (no damping)
+    // so shooting straight down recoil-jumps straight up — the whole
+    // point of the mechanic.
+    if (window.__forceFeatures?.recoil !== 0) {
+      const recoilMag = this.recoilImpulse;
+      if (recoilMag > 0) {
+        player.applyImpulse(-aim.x * recoilMag, -aim.y * recoilMag);
+      }
+    }
     const punch = shotIndex === 0 ? 0.06 : 0.04;
     this.game.fx.camera.punch(punch);
   }
@@ -739,6 +805,9 @@ export class Revolver extends Weapon {
     this.length = 0.55;
     this.barrelOffset = 0.65;
     this._hammerCock = 0;
+    this.recoilImpulse = 5;
+    this.throwImpulse = 4;
+    this.hitKnockback = 1.4;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -793,9 +862,15 @@ export class Revolver extends Weapon {
       color: 0xffaa55, emissive: 0xff7733, tracer: true,
     });
     audio.shoot();
-    const rec = player.grounded ? 0.25 : 0.5;
-    player.body.velocity.x -= aim.x * rec;
-    if (!player.grounded) player.body.velocity.y -= aim.y * 0.4;
+    // Sub-B recoil-jump — opposite aim direction. Y kept full (no damping)
+    // so shooting straight down recoil-jumps straight up — the whole
+    // point of the mechanic.
+    if (window.__forceFeatures?.recoil !== 0) {
+      const recoilMag = this.recoilImpulse;
+      if (recoilMag > 0) {
+        player.applyImpulse(-aim.x * recoilMag, -aim.y * recoilMag);
+      }
+    }
     this.game.fx.camera.punch(0.18);
     this.game.fx.particles.burst(mz.x, mz.y, 0,
       { count: 7, speed: 5, color: 0xffaa55 });
@@ -823,6 +898,9 @@ export class Crossbow extends Weapon {
     this.length = 1.6;
     this.barrelOffset = 1.1;
     this._postFireTimer = 0;
+    this.recoilImpulse = 3;
+    this.throwImpulse = 4;
+    this.hitKnockback = 1.1;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -866,6 +944,15 @@ export class Crossbow extends Weapon {
     });
     proj._orientToVel = true;
     audio.shoot();
+    // Sub-B recoil-jump — opposite aim direction. Y kept full (no damping)
+    // so shooting straight down recoil-jumps straight up — the whole
+    // point of the mechanic.
+    if (window.__forceFeatures?.recoil !== 0) {
+      const recoilMag = this.recoilImpulse;
+      if (recoilMag > 0) {
+        player.applyImpulse(-aim.x * recoilMag, -aim.y * recoilMag);
+      }
+    }
     this.game.fx.camera.punch(0.12);
     if (this._stringMesh) this._stringMesh.scale.x = 0.85;
     if (this._boltMesh) this._boltMesh.visible = false;
@@ -896,6 +983,9 @@ export class Flamethrower extends Weapon {
     this.barrelOffset = 0.55;
     this._held = false;
     this._fireAccum = 0;
+    this.recoilImpulse = 0.4;
+    this.throwImpulse = 4;
+    this.hitKnockback = 0.4;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -968,6 +1058,15 @@ export class Flamethrower extends Weapon {
       }
     };
     audio.shoot();
+    // Sub-B recoil-jump — opposite aim direction. Y kept full (no damping)
+    // so shooting straight down recoil-jumps straight up — the whole
+    // point of the mechanic.
+    if (window.__forceFeatures?.recoil !== 0) {
+      const recoilMag = this.recoilImpulse;
+      if (recoilMag > 0) {
+        player.applyImpulse(-aim.x * recoilMag, -aim.y * recoilMag);
+      }
+    }
   }
 }
 
@@ -984,6 +1083,8 @@ export class DualPistols extends Weapon {
     this.length = 0.55;
     this.barrelOffset = 0.55;
     this._nextHand = 'R';
+    this.recoilImpulse = 2;
+    this.throwImpulse = 3;
   }
   _buildMesh() {
     const buildOne = (color = 0x333344) => {
@@ -1070,6 +1171,15 @@ export class DualPistols extends Weapon {
       color: 0xffcc55, emissive: 0xffaa22, tracer: true,
     });
     audio.shoot();
+    // Sub-B recoil-jump — opposite aim direction. Y kept full (no damping)
+    // so shooting straight down recoil-jumps straight up — the whole
+    // point of the mechanic.
+    if (window.__forceFeatures?.recoil !== 0) {
+      const recoilMag = this.recoilImpulse;
+      if (recoilMag > 0) {
+        player.applyImpulse(-aim.x * recoilMag, -aim.y * recoilMag);
+      }
+    }
     this.game.fx.camera.punch(0.07);
     this._nextHand = (this._nextHand === 'R') ? 'L' : 'R';
   }
@@ -1085,6 +1195,8 @@ export class Grenade extends Weapon {
     this.fireDelay = 0.5;
     this.aimWeapon = true;
     this.ammo = 3;
+    this.throwImpulse = 5;
+    this.hitKnockback = 1.5;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -1164,6 +1276,9 @@ export class RPG extends Weapon {
     this.poseLeft = null;
     this.ammo = 1;
     this.barrelOffset = 0.85;
+    this.recoilImpulse = 18;
+    this.throwImpulse = 12;
+    this.hitKnockback = 3.0;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -1184,10 +1299,15 @@ export class RPG extends Weapon {
       explosive: true, explodeOnContact: true, color: 0xff4d6d, emissive: 0xaa0030,
       mesh: { geometry: new THREE.ConeGeometry(0.13, 0.5, 8).rotateZ(-Math.PI / 2), material: new THREE.MeshLambertMaterial({ color: 0xff4d6d, emissive: 0xff4d6d, emissiveIntensity: 0.5 }) },
     });
-    // RPG recoil — meaningful kick on ground, big in air for rocket-jumps.
-    const rec = player.grounded ? 4 : 8;
-    player.body.velocity.x -= aim.x * rec;
-    if (!player.grounded) player.body.velocity.y -= aim.y * 5;
+    // Sub-B recoil-jump — opposite aim direction. Y kept full (no damping)
+    // so shooting straight down recoil-jumps straight up — the whole
+    // point of the mechanic.
+    if (window.__forceFeatures?.recoil !== 0) {
+      const recoilMag = this.recoilImpulse;
+      if (recoilMag > 0) {
+        player.applyImpulse(-aim.x * recoilMag, -aim.y * recoilMag);
+      }
+    }
     audio.shoot(); audio.explode();
     this.game.fx.camera.punch(0.4);
   }
@@ -1211,6 +1331,9 @@ export class SniperRifle extends Weapon {
     this._laser = null;
     this._laserDot = null;
     this._tracerTime = 0;
+    this.recoilImpulse = 8;
+    this.throwImpulse = 5;
+    this.hitKnockback = 2.4;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -1343,10 +1466,15 @@ export class SniperRifle extends Weapon {
     const ax = aim.x, ay = aim.y;
     audio.shoot(); audio.beep(220, 0.18, 'sawtooth', 0.4);
     this._tracerTime = 0.18;
-    // Big recoil — air recoil is huge to enable rocket-jump-style boosts.
-    const rec = player.grounded ? 5 : 12;
-    player.body.velocity.x -= ax * rec;
-    if (!player.grounded) player.body.velocity.y -= ay * 5;
+    // Sub-B recoil-jump — opposite aim direction. Y kept full (no damping)
+    // so shooting straight down recoil-jumps straight up — the whole
+    // point of the mechanic.
+    if (window.__forceFeatures?.recoil !== 0) {
+      const recoilMag = this.recoilImpulse;
+      if (recoilMag > 0) {
+        player.applyImpulse(-aim.x * recoilMag, -aim.y * recoilMag);
+      }
+    }
     this.game.fx.camera.punch(0.55);
     this.game.hitStop?.(0.06);
     this.game.fx.particles.burst(cast.from.x, cast.from.y, 0, { count: 14, speed: 8, color: 0xffd060 });
@@ -1420,6 +1548,8 @@ export class Shurikens extends Weapon {
     this.aimWeapon = true;
     this.poseRight = 'aim';
     this.ammo = 8;
+    this.throwImpulse = 2;
+    this.hitKnockback = 0.5;
   }
   _buildMesh() {
     // 6-pointed throwing star with center hub + circular hole. Built via
@@ -1489,6 +1619,8 @@ export class StickyBomb extends Weapon {
     this.fireDelay = 0.7;
     this.aimWeapon = true;
     this.ammo = 2;
+    this.throwImpulse = 5;
+    this.hitKnockback = 1.5;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -1677,6 +1809,9 @@ export class HulkHands extends Weapon {
     this._poundCooldown = 0;
     // Track whether we hid the rig hands so detach() can restore.
     this._hidRigHands = false;
+    this.throwImpulse = 5;
+    this.meleeRecoilImpulse = 7;
+    this.hitKnockback = 1.3;
   }
 
   _buildMesh() {
@@ -1927,6 +2062,9 @@ export class RubberChicken extends Weapon {
     this.swingTimer = 0;
     this.hits = new Set();
     this.tileSwingDmg = 5;
+    this.throwImpulse = 3;
+    this.meleeRecoilImpulse = 3;
+    this.hitKnockback = 0.6;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -1984,6 +2122,9 @@ export class Boomerang extends Weapon {
     this.fireDelay = 0.8;
     this.aimWeapon = true;
     this.ammo = 5;
+    this.throwImpulse = 4;
+    this.meleeRecoilImpulse = 4;
+    this.hitKnockback = 0.9;
   }
   _buildMesh() {
     const shape = new THREE.Shape();
@@ -2016,6 +2157,9 @@ export class FishSlap extends Weapon {
     this.swingTimer = 0;
     this.hits = new Set();
     this.tileSwingDmg = 6;
+    this.throwImpulse = 3;
+    this.meleeRecoilImpulse = 3;
+    this.hitKnockback = 0.6;
   }
   _buildMesh() {
     const g = new THREE.SphereGeometry(0.18, 10, 8);
@@ -2222,6 +2366,9 @@ export class Lightsaber extends Weapon {
     if (this._blade) this._blade.material.emissive.setHex(this.bladeColor);
     this._thrownProj = null;
     this._thrownCooldown = 0;
+    this.throwImpulse = 5;
+    this.meleeRecoilImpulse = 7;
+    this.hitKnockback = 1.3;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -2339,6 +2486,9 @@ export class FlameSword extends Weapon {
     this.swingTimer = 0;
     this.hits = new Set();
     this.tileSwingDmg = 20;
+    this.throwImpulse = 5;
+    this.meleeRecoilImpulse = 7;
+    this.hitKnockback = 1.3;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -2413,6 +2563,9 @@ export class IceSword extends Weapon {
     this.swingTimer = 0;
     this.hits = new Set();
     this.tileSwingDmg = 20;
+    this.throwImpulse = 5;
+    this.meleeRecoilImpulse = 7;
+    this.hitKnockback = 1.3;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -2498,6 +2651,9 @@ export class Kamehameha extends Weapon {
     this._lockedAim = null;
     this._chargeMesh = null;
     this._haloMesh = null;
+    this.throwImpulse = 4;
+    this.recoilImpulse = 3;
+    this.hitKnockback = 1.2;
   }
   _buildMesh() {
     // Idle pickup mesh — small inert orb the carrier holds.
@@ -2634,8 +2790,13 @@ export class Kamehameha extends Weapon {
         }
       }
       // Continuous recoil — visibly slides the player back during the beam.
-      p.body.velocity.x -= ax * 0.6;
-      if (!p.grounded) p.body.velocity.y -= ay * 0.4;
+      // Sub-B: route through applyImpulse so per-frame cap applies.
+      if (window.__forceFeatures?.recoil !== 0) {
+        const recoilMag = this.recoilImpulse;
+        if (recoilMag > 0) {
+          p.applyImpulse(-ax * recoilMag * 0.2, -ay * recoilMag * 0.13);
+        }
+      }
       // Charge orb fades out as beam fires.
       if (this._chargeMesh) {
         const fade = 1 - t;
@@ -2666,9 +2827,15 @@ export class Kamehameha extends Weapon {
     this.game.fx.camera.punch(1.0);
     this.game.hitStop(0.12);
     const ax = this._lockedAim.x, ay = this._lockedAim.y;
-    // Heavy backward yeet — shooter visibly slammed back at the moment of release.
-    if (player.grounded) player.body.velocity.x -= ax * 8;
-    else { player.body.velocity.x -= ax * 14; player.body.velocity.y -= ay * 8; }
+    // Sub-B recoil-jump — opposite aim direction. Y kept full (no damping)
+    // so shooting straight down recoil-jumps straight up — the whole
+    // point of the mechanic.
+    if (window.__forceFeatures?.recoil !== 0) {
+      const recoilMag = this.recoilImpulse;
+      if (recoilMag > 0) {
+        player.applyImpulse(-ax * recoilMag, -ay * recoilMag);
+      }
+    }
     // Ring of energy bursting outward at the release point.
     const handX = player.position.x + ax * 0.85;
     const handY = player.position.y + 0.55 + ay * 0.4;
@@ -2731,6 +2898,8 @@ export class Nuke extends Weapon {
     this.fireDelay = 1.0;
     this.aimWeapon = true;
     this.ammo = 1;
+    this.throwImpulse = 5;
+    this.hitKnockback = 1.5;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -2787,8 +2956,15 @@ export class Nuke extends Weapon {
       this.destroy();
     };
     audio.shoot();
-    if (player.grounded) player.body.velocity.x -= ax * 4;
-    else { player.body.velocity.x -= ax * 8; player.body.velocity.y -= ay * 6; }
+    // Sub-B recoil-jump — opposite aim direction. Y kept full (no damping)
+    // so shooting straight down recoil-jumps straight up — the whole
+    // point of the mechanic.
+    if (window.__forceFeatures?.recoil !== 0) {
+      const recoilMag = this.recoilImpulse;
+      if (recoilMag > 0) {
+        player.applyImpulse(-ax * recoilMag, -ay * recoilMag);
+      }
+    }
   }
 }
 
@@ -2801,6 +2977,9 @@ export class LightningStaff extends Weapon {
     this.aimWeapon = true;
     this.poseRight = 'aim';
     this.ammo = 6;
+    this.throwImpulse = 4;
+    this.recoilImpulse = 3;
+    this.hitKnockback = 1.2;
   }
   _buildMesh() {
     const grp = new THREE.Group();
@@ -2848,6 +3027,15 @@ export class LightningStaff extends Weapon {
       prev = { x: best.position.x, y: best.position.y };
     }
     game.fx.camera.punch(0.2);
+    // Sub-B recoil-jump — opposite aim direction. Y kept full (no damping)
+    // so shooting straight down recoil-jumps straight up — the whole
+    // point of the mechanic.
+    if (window.__forceFeatures?.recoil !== 0) {
+      const recoilMag = this.recoilImpulse;
+      if (recoilMag > 0) {
+        player.applyImpulse(-player.aimDir.x * recoilMag, -player.aimDir.y * recoilMag);
+      }
+    }
   }
 }
 

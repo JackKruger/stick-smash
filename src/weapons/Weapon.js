@@ -26,6 +26,12 @@ export class Weapon {
     this.cooldown = 0;
     this.fireDelay = 0.3;
     this.dropCooldown = 0;
+    // Sub-B impulse tuning — defaults 0 = no force. Per-weapon overrides
+    // in weapons.js.
+    this.recoilImpulse = 0;       // firearm recoil magnitude
+    this.throwImpulse = 0;        // self-impulse when thrown
+    this.meleeRecoilImpulse = 0;  // self-impulse on melee strike
+    this.hitKnockback = 1.0;      // multiplier for victim knockback on damage
     this.life = 30;          // seconds before world body removed
     this.gravity = true;
     // Swing state (set by melee subclass fire()) — base inits so updateMesh
@@ -52,6 +58,9 @@ export class Weapon {
       linearDamping: 0.2,
       angularDamping: 0.4,
     });
+    // Box collider 0.6×0.16×0.16m. Y-extent intentionally low so player
+    // walking INTO the side rolls the capsule over the top (standable
+    // weapons per Sub-B §3.4). Friction comes from physics.materials.prop.
     body.addShape(new CANNON.Box(new CANNON.Vec3(0.3, 0.08, 0.08)));
     body.position.set(x, y, z);
     body.userData = { kind: 'weapon', weapon: this };
