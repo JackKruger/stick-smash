@@ -323,3 +323,82 @@ window.__test_bow_removed = function () {
   const reg = window.game?.weaponRegistry || {};
   window.__weaponTest.assert(!reg.Bow, 'Bow should be removed from weapon registry (got ' + reg.Bow + ')');
 };
+
+window.__test_smg_full_auto = function () {
+  const sm = window.game?.players?.find(p => p && p.isLocal && p.alive);
+  window.__weaponTest.assert(sm, 'need local live player');
+  const reg = window.game.weaponRegistry || {};
+  const SMG = reg.SMG;
+  window.__weaponTest.assert(SMG, 'SMG class missing');
+  const w = new SMG(window.game);
+  w.attachTo(sm); sm.weapon = w;
+  sm.aimDir = { x: 1, y: 0 };
+  // Press attack — should start auto-firing immediately (no spin-up).
+  w.tryFire(sm);
+  const before = window.game.projectiles.length;
+  // 0.5s of held attack at fireDelay 0.06s = ~8 shots.
+  for (let i = 0; i < 30; i++) w.heldTick(1 / 60, sm);
+  const after = window.game.projectiles.length;
+  window.__weaponTest.assert(after - before >= 6, 'SMG should auto-fire 6+ shots in 0.5s held (got ' + (after - before) + ')');
+  // Cleanup
+  while (window.game.projectiles.length) window.game.projectiles.pop().destroy?.();
+  if (sm.weapon === w) { w.destroy(); sm.weapon = null; }
+};
+
+window.__test_revolver_heavy_single_shot = function () {
+  const sm = window.game?.players?.find(p => p && p.isLocal && p.alive);
+  window.__weaponTest.assert(sm, 'need local live player');
+  const reg = window.game.weaponRegistry || {};
+  const Rev = reg.Revolver;
+  window.__weaponTest.assert(Rev, 'Revolver class missing');
+  const w = new Rev(window.game);
+  w.attachTo(sm); sm.weapon = w;
+  sm.aimDir = { x: 1, y: 0 };
+  window.__weaponTest.assert(w.poseLeft === null, 'Revolver should be 1H (poseLeft=null)');
+  window.__weaponTest.assert(w.ammo === 6, 'Revolver should start with 6 ammo');
+  const before = window.game.projectiles.length;
+  // Use the standard tryFire so cooldown logic kicks in (Revolver doesn't override).
+  w.tryFire(sm);
+  const after = window.game.projectiles.length;
+  window.__weaponTest.assert(after - before === 1, 'Revolver should fire exactly 1 projectile per click (got ' + (after - before) + ')');
+  const proj = window.game.projectiles[after - 1];
+  window.__weaponTest.assert(proj.damage === 35, 'Revolver projectile damage should be 35 (got ' + proj.damage + ')');
+  // Click again immediately — cooldown blocks.
+  const beforeCool = window.game.projectiles.length;
+  w.tryFire(sm);
+  window.__weaponTest.assert(window.game.projectiles.length === beforeCool, 'Revolver should be on cooldown after firing');
+  while (window.game.projectiles.length) window.game.projectiles.pop().destroy?.();
+  if (sm.weapon === w) { w.destroy(); sm.weapon = null; }
+};
+
+window.__test_ar_three_burst = function () {
+  const sm = window.game?.players?.find(p => p && p.isLocal && p.alive);
+  window.__weaponTest.assert(sm, 'need local live player');
+  const reg = window.game.weaponRegistry || {};
+  const AR = reg.AssaultRifle;
+  window.__weaponTest.assert(AR, 'AssaultRifle class missing');
+  const w = new AR(window.game);
+  w.attachTo(sm); sm.weapon = w;
+  sm.aimDir = { x: 1, y: 0 };
+  // Drive both heldTick (per-tick state machine) AND worldTick (cooldown
+  // decrement). In real gameplay the game loop calls both each frame; in
+  // test isolation we have to do it manually.
+  const tick = (n) => { for (let i = 0; i < n; i++) { w.heldTick(1 / 60, sm); w.worldTick(1 / 60); } };
+  const before = window.game.projectiles.length;
+  w.tryFire(sm);
+  tick(12); // 0.2s — covers 3 burst shots @ 0.05s
+  const after = window.game.projectiles.length;
+  window.__weaponTest.assert(after - before === 3, 'AR single tap should fire exactly 3 shots (got ' + (after - before) + ')');
+  // Holding (without re-tapping tryFire) should NOT auto-burst more.
+  tick(12);
+  const sustained = window.game.projectiles.length;
+  window.__weaponTest.assert(sustained - after === 0, 'AR should not auto-burst on held attack (got ' + (sustained - after) + ' extra)');
+  // After 0.4s cooldown, another tap fires another 3.
+  tick(25);
+  w.tryFire(sm);
+  tick(12);
+  const second = window.game.projectiles.length;
+  window.__weaponTest.assert(second - sustained === 3, 'AR second tap after cooldown should fire 3 (got ' + (second - sustained) + ')');
+  while (window.game.projectiles.length) window.game.projectiles.pop().destroy?.();
+  if (sm.weapon === w) { w.destroy(); sm.weapon = null; }
+};

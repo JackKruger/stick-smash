@@ -543,6 +543,192 @@ export class Minigun extends Weapon {
   }
 }
 
+export class SMG extends Weapon {
+  constructor(game) {
+    super(game);
+    this.name = 'SMG';
+    this.icon = '🔫';
+    this.fireDelay = 0.06;
+    this.aimWeapon = true;
+    this.poseRight = 'aim';
+    this.poseLeft = 'support';
+    this.ammo = 60;
+    this.length = 0.55;
+    this._held = false;
+    this._fireAccum = 0;
+  }
+  _buildMesh() {
+    const grp = new THREE.Group();
+    const recv = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.14, 0.1), new THREE.MeshLambertMaterial({ color: 0x2a2a2e }));
+    recv.position.x = 0.21;
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.32, 8), new THREE.MeshLambertMaterial({ color: 0x141417 }));
+    barrel.rotation.z = Math.PI / 2; barrel.position.x = 0.55;
+    const mag = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.18, 0.08), new THREE.MeshLambertMaterial({ color: 0x1a1a1d }));
+    mag.position.set(0.18, -0.18, 0); mag.rotation.z = -0.18;
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.18, 0.08), new THREE.MeshLambertMaterial({ color: 0x222222 }));
+    grip.position.set(0.05, -0.18, 0); grip.rotation.z = -0.15;
+    grp.add(recv, barrel, mag, grip);
+    this.mesh = grp;
+  }
+  tryFire(player) {
+    this._held = true;
+    if (this.cooldown > 0) return;
+    // First shot fires immediately on press.
+    this._fireAccum = this.fireDelay;
+  }
+  releaseFire(player) {
+    this._held = false;
+    this._fireAccum = 0;
+  }
+  heldTick(dt, player) {
+    if (!this._held) return;
+    this._fireAccum += dt;
+    while (this._fireAccum >= this.fireDelay && this.ammo > 0) {
+      this._fireAccum -= this.fireDelay;
+      this.fire(player);
+      this.ammo--;
+      if (this.ammo <= 0) { player.weapon = null; this.destroy(); return; }
+    }
+  }
+  fire(player) {
+    const aim = this.effectiveAimDir ?? player.aimDir;
+    const a = Math.atan2(aim.y, aim.x) + rand(-0.07, 0.07);
+    const sp = 40;
+    new Projectile(this.game, {
+      x: player.position.x + aim.x * 0.7, y: player.position.y + 0.7 + aim.y * 0.3,
+      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+      damage: 6, owner: player, gravity: false, life: 1.2, radius: 0.05,
+      color: 0xffcc66, tracer: true,
+    });
+    audio.shoot();
+    this.game.fx.camera.punch(0.025);
+  }
+}
+
+export class AssaultRifle extends Weapon {
+  constructor(game) {
+    super(game);
+    this.name = 'AssaultRifle';
+    this.icon = '🪖';
+    this.fireDelay = 0.4;        // burst cooldown
+    this._burstInterval = 0.05;
+    this.aimWeapon = true;
+    this.poseRight = 'aim';
+    this.poseLeft = 'support';
+    this.ammo = 30;
+    this.length = 0.95;
+    this._burstRemaining = 0;
+    this._burstAccum = 0;
+    this._burstShotIndex = 0;
+  }
+  _buildMesh() {
+    const grp = new THREE.Group();
+    const recv = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.13, 0.1), new THREE.MeshLambertMaterial({ color: 0x33332e }));
+    recv.position.x = 0.27;
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.55, 10), new THREE.MeshLambertMaterial({ color: 0x14140f }));
+    barrel.rotation.z = Math.PI / 2; barrel.position.x = 0.78;
+    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.1, 0.08), new THREE.MeshLambertMaterial({ color: 0x2a201a }));
+    stock.position.x = -0.08;
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.03, 0.05), new THREE.MeshLambertMaterial({ color: 0x111111 }));
+    rail.position.set(0.32, 0.1, 0);
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.18, 0.08), new THREE.MeshLambertMaterial({ color: 0x1a1a1a }));
+    grip.position.set(0.08, -0.18, 0); grip.rotation.z = -0.15;
+    grp.add(recv, barrel, stock, rail, grip);
+    this.mesh = grp;
+  }
+  tryFire(player) {
+    if (this.cooldown > 0) return;
+    if (this._burstRemaining > 0) return;
+    this.cooldown = this.fireDelay;
+    this._burstRemaining = 3;
+    this._burstAccum = this._burstInterval; // fire shot 0 on next heldTick
+    this._burstShotIndex = 0;
+  }
+  heldTick(dt, player) {
+    if (this._burstRemaining <= 0) return;
+    this._burstAccum += dt;
+    while (this._burstAccum >= this._burstInterval && this._burstRemaining > 0 && this.ammo > 0) {
+      this._burstAccum -= this._burstInterval;
+      this.fire(player, this._burstShotIndex);
+      this._burstShotIndex++;
+      this._burstRemaining--;
+      this.ammo--;
+      if (this.ammo <= 0) { player.weapon = null; this.destroy(); return; }
+    }
+  }
+  fire(player, shotIndex = 0) {
+    const aim = this.effectiveAimDir ?? player.aimDir;
+    const spread = [0.035, 0.025, 0.015][shotIndex] ?? 0.02;
+    const a = Math.atan2(aim.y, aim.x) + rand(-spread, spread);
+    const sp = 50;
+    new Projectile(this.game, {
+      x: player.position.x + aim.x * 0.95, y: player.position.y + 0.7 + aim.y * 0.3,
+      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+      damage: 12, owner: player, gravity: false, life: 1.4, radius: 0.06,
+      color: 0xffeecc, tracer: true,
+    });
+    audio.shoot();
+    const punch = shotIndex === 0 ? 0.06 : 0.04;
+    this.game.fx.camera.punch(punch);
+  }
+}
+
+export class Revolver extends Weapon {
+  constructor(game) {
+    super(game);
+    this.name = 'Revolver';
+    this.icon = '🔫';
+    this.fireDelay = 0.5;
+    this.aimWeapon = true;
+    this.poseRight = 'aim';
+    this.poseLeft = null;          // 1H
+    this.ammo = 6;
+    this.length = 0.55;
+    this._hammerCock = 0;
+  }
+  _buildMesh() {
+    const grp = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.13, 0.09), new THREE.MeshLambertMaterial({ color: 0x4a3018 }));
+    body.position.x = 0.2;
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.32, 10), new THREE.MeshLambertMaterial({ color: 0x222226 }));
+    barrel.rotation.z = Math.PI / 2; barrel.position.x = 0.5;
+    const cylinder = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.1, 6), new THREE.MeshLambertMaterial({ color: 0x33332e }));
+    cylinder.rotation.z = Math.PI / 2; cylinder.position.set(0.18, 0, 0);
+    const hammer = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.06, 0.05), new THREE.MeshLambertMaterial({ color: 0x111114 }));
+    hammer.position.set(0.05, 0.1, 0);
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.22, 0.08), new THREE.MeshLambertMaterial({ color: 0x222222 }));
+    grip.position.set(0.02, -0.18, 0); grip.rotation.z = -0.25;
+    grp.add(body, barrel, cylinder, hammer, grip);
+    this.mesh = grp;
+    this._hammerMesh = hammer;
+  }
+  fire(player) {
+    const aim = this.effectiveAimDir ?? player.aimDir;
+    const sp = 60;
+    new Projectile(this.game, {
+      x: player.position.x + aim.x * 0.7, y: player.position.y + 0.7 + aim.y * 0.3,
+      vx: aim.x * sp, vy: aim.y * sp,
+      damage: 35, owner: player, gravity: false, life: 1.5, radius: 0.09,
+      color: 0xffaa55, emissive: 0xff7733, tracer: true,
+    });
+    audio.shoot();
+    const rec = player.grounded ? 0.25 : 0.5;
+    player.body.velocity.x -= aim.x * rec;
+    if (!player.grounded) player.body.velocity.y -= aim.y * 0.4;
+    this.game.fx.camera.punch(0.18);
+    this.game.fx.particles.burst(player.position.x + aim.x, player.position.y + 0.7, 0,
+      { count: 7, speed: 5, color: 0xffaa55 });
+    this._hammerCock = 1;
+  }
+  heldTick(dt, player) {
+    // Cosmetic hammer cock-back animation only.
+    if (this._hammerCock > 0) {
+      this._hammerCock = Math.max(0, this._hammerCock - dt * 4);
+      if (this._hammerMesh) this._hammerMesh.rotation.z = -0.4 * this._hammerCock;
+    }
+  }
+}
+
 // === EXPLOSIVES ===
 
 export class Grenade extends Weapon {
@@ -2354,7 +2540,7 @@ export class ForceChokePower {
 
 // Catalog of all weapons and weighted pool for spawns.
 export const WEAPON_CLASSES = [
-  Sword, Bat, Pistol, Shotgun, Minigun, Grenade, RPG, RubberChicken, Boomerang, FishSlap,
+  Sword, Bat, Pistol, Shotgun, Minigun, SMG, AssaultRifle, Revolver, Grenade, RPG, RubberChicken, Boomerang, FishSlap,
   FlameSword, IceSword, Kamehameha, Nuke, LightningStaff, Lightsaber,
   Longsword, Mace, WarHammer, Halberd,
   SniperRifle, ThrowingKnives, StickyBomb,
