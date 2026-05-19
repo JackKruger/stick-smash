@@ -183,6 +183,9 @@ export class Stickman {
     this.crouching = false;
     this.sliding = false;
     this._currentPlanetRef = null;     // populated by _updateGroundCheck on curved-gravity levels
+    this._planetMode = 'walking';        // 'walking' | 'jumping' | 'launched' | 'returning'
+    this._launchTimer = 0;               // seconds remaining in 'launched' mode
+    this._modeStickPlanet = null;        // planet captured at jump start; sticky during jumping
 
     // Combat
     this.attackTimer = 0;        // counts down through swing
@@ -339,6 +342,19 @@ export class Stickman {
     this.body.velocity.x = vx;
     this.body.velocity.y = vy;
     this.hitstun = Math.max(this.hitstun, stun);
+    // Magnetic-gravity levels: large knockbacks enter 'launched' mode so the
+    // player isn't snapped back to the surface instantly. Threshold and timer
+    // come from the magnetic-gravity spec.
+    if (this.game?.level?.curvedGravity) {
+      const T = window.__planet ?? {};
+      const LAUNCH_MIN_KB = T.LAUNCH_MIN_KB ?? 6;
+      const mag = Math.hypot(vx, vy);
+      if (mag > LAUNCH_MIN_KB) {
+        this._planetMode = 'launched';
+        this._launchTimer = clamp(mag * 0.04, 0.3, 1.2);
+        this._modeStickPlanet = null;
+      }
+    }
   }
 
   // Additive velocity impulse with per-call and per-frame caps. Used by Sub-B
@@ -613,6 +629,14 @@ export class Stickman {
 
   _updateGroundCheck() {
     if (this.game?.level?.curvedGravity) {
+      // launched / returning: never grounded, no raycast — body is free-flying.
+      if (this._planetMode === 'launched' || this._planetMode === 'returning') {
+        this._currentPlanetRef = null;
+        this.grounded = false;
+        this.groundNormalY = 1;
+        this.coyote = Math.max(0, this.coyote - this._dt);
+        return;
+      }
       this._currentPlanetRef = this._currentPlanet();
       const planet = this._currentPlanetRef;
       if (!planet) {
@@ -1452,6 +1476,163 @@ export class Stickman {
     return best;
   }
 
+  // Nearest planet by Euclidean distance. Unlike _currentPlanet (which uses
+  // haloRadius gating), this never returns null when planets exist — used by
+  // 'returning' to pick a target after a knockback. Halo logic is for the
+  // constant-pull projectile gravity, not the magnetic player snap.
+  _nearestPlanet() {
+    const planets = this.game?.level?.planets;
+    if (!planets || !planets.length) return null;
+    const px = this.body.position.x, py = this.body.position.y;
+    let best = null, bestD2 = Infinity;
+    for (const p of planets) {
+      const dx = p.cx - px, dy = p.cy - py;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestD2) { bestD2 = d2; best = p; }
+    }
+    return best;
+  }
+
+  // Magnetic-gravity movement for the space level. Replaces force-based gravity
+  // for the player body with a scripted state machine. Player physics body has
+  // world gravity = 0; all motion comes from this method writing velocity (and
+  // occasionally position) directly. No tangential thrust ever accumulates into
+  // orbital escape velocity — that bug is impossible by construction here.
+  _movePlanetMagnetic(dt, moveX, boosted, flying) {
+    const T = window.__planet ?? {};
+    const JUMP_DOWN_ACCEL = T.JUMP_DOWN_ACCEL ?? 30;
+    const AIR_ACCEL = T.AIR_ACCEL ?? 18;
+    const CAPSULE_OFFSET = 0.95;  // matches existing _updateGroundCheck capsule offset
+    const mode = this._planetMode;
+
+    // --- WALKING ---
+    if (mode === 'walking') {
+      const planet = this._currentPlanetRef ?? this._nearestPlanet();
+      if (!planet) return;
+      this._modeStickPlanet = planet;
+      const px = this.body.position.x, py = this.body.position.y;
+      const dx = px - planet.cx, dy = py - planet.cy;
+      const r = Math.hypot(dx, dy) || 1;
+      const ux = dx / r, uy = dy / r;
+      const tx = -uy, ty = ux;
+
+      // Hard radial snap: lock to surface + capsule offset.
+      const surfaceR = planet.radius + CAPSULE_OFFSET;  // 0.95 matches existing capsule offset
+      this.body.position.x = planet.cx + ux * surfaceR;
+      this.body.position.y = planet.cy + uy * surfaceR;
+
+      // Velocity: kill radial, keep tangential.
+      const vT = this.body.velocity.x * tx + this.body.velocity.y * ty;
+
+      // Tangential accel toward target.
+      const speedMaxC = this.crouching ? 2.0 : (boosted ? 6 : (flying ? 7 : 4.0));
+      const accelC = (boosted ? 65 : 45);
+      const targetT = moveX * speedMaxC;
+      const dvT = targetT - vT;
+      const stepT = clamp(dvT, -accelC * dt, accelC * dt);
+      const newVT = vT + stepT;
+      this.body.velocity.x = newVT * tx;
+      this.body.velocity.y = newVT * ty;
+
+      // Friction when idle.
+      if (Math.abs(moveX) < 0.05) {
+        const k = Math.pow(0.001, dt);
+        this.body.velocity.x *= k;
+        this.body.velocity.y *= k;
+      }
+      if (Math.abs(newVT) > 0.2) this.facing = Math.sign(newVT) || this.facing;
+
+      // Jump → switch to jumping.
+      const wantJump = this.input.jumpPressed && performance.now() >= (this._jumpInputCooldown || 0);
+      if (wantJump) {
+        if (this.charging) this._clearCombatState();
+        const jumpSpeed = 8;
+        // Replace radial component with jumpSpeed outward; preserve tangential.
+        this.body.velocity.x = newVT * tx + jumpSpeed * ux;
+        this.body.velocity.y = newVT * ty + jumpSpeed * uy;
+        this._planetMode = 'jumping';
+        this._modeStickPlanet = planet;
+        this._jumpLockUntil = performance.now() + 80;
+        this._jumpInputCooldown = performance.now() + 120;
+        this.grounded = false;
+        audio.jump?.();
+        if (this === this.game?.localPlayer) vibrate(12);
+      }
+      return;
+    }
+
+    // --- JUMPING ---
+    if (mode === 'jumping') {
+      const planet = this._modeStickPlanet ?? this._nearestPlanet();
+      if (!planet) return;
+      const px = this.body.position.x, py = this.body.position.y;
+      const dx = px - planet.cx, dy = py - planet.cy;
+      const r = Math.hypot(dx, dy) || 1;
+      const ux = dx / r, uy = dy / r;
+      const tx = -uy, ty = ux;
+      // Scripted down accel toward the captured planet.
+      this.body.velocity.x -= ux * JUMP_DOWN_ACCEL * dt;
+      this.body.velocity.y -= uy * JUMP_DOWN_ACCEL * dt;
+
+      // Tangential mid-air control — small fraction of ground accel.
+      const vT = this.body.velocity.x * tx + this.body.velocity.y * ty;
+      const speedMaxAir = 4.0;
+      const targetT = moveX * speedMaxAir;
+      const dvT = targetT - vT;
+      const stepT = clamp(dvT, -AIR_ACCEL * dt, AIR_ACCEL * dt);
+      const newVT = vT + stepT;
+      const vR = this.body.velocity.x * ux + this.body.velocity.y * uy;
+      this.body.velocity.x = newVT * tx + vR * ux;
+      this.body.velocity.y = newVT * ty + vR * uy;
+
+      // Land check: radial vel ≤ 0 AND inside the surface band.
+      const surfaceR = planet.radius + CAPSULE_OFFSET;
+      if (vR <= 0 && r <= surfaceR + 0.2) {
+        this._planetMode = 'walking';
+        this._modeStickPlanet = null;
+      }
+      if (Math.abs(newVT) > 0.2) this.facing = Math.sign(newVT) || this.facing;
+      return;
+    }
+
+    // --- LAUNCHED ---
+    if (mode === 'launched') {
+      const LAUNCH_DRAG = T.LAUNCH_DRAG ?? 0.98;
+      this.body.velocity.x *= Math.pow(LAUNCH_DRAG, dt * 60);
+      this.body.velocity.y *= Math.pow(LAUNCH_DRAG, dt * 60);
+      this._launchTimer -= dt;
+      if (this._launchTimer <= 0) {
+        this._planetMode = 'returning';
+      }
+      return;
+    }
+
+    // --- RETURNING ---
+    if (mode === 'returning') {
+      const RETURN_ACCEL = T.RETURN_ACCEL ?? 40;
+      const RETURN_VEL_CAP = T.RETURN_VEL_CAP ?? 25;
+      const planet = this._nearestPlanet();
+      if (!planet) return;
+      const px = this.body.position.x, py = this.body.position.y;
+      const dx = planet.cx - px, dy = planet.cy - py;
+      const r = Math.hypot(dx, dy) || 1;
+      const ux = dx / r, uy = dy / r;
+      this.body.velocity.x += ux * RETURN_ACCEL * dt;
+      this.body.velocity.y += uy * RETURN_ACCEL * dt;
+      const vMag = Math.hypot(this.body.velocity.x, this.body.velocity.y);
+      if (vMag > RETURN_VEL_CAP) {
+        const f = RETURN_VEL_CAP / vMag;
+        this.body.velocity.x *= f;
+        this.body.velocity.y *= f;
+      }
+      if (r < planet.haloRadius) {
+        this._planetMode = 'jumping';
+        this._modeStickPlanet = planet;
+      }
+      return;
+    }
+  }
+
   _move(dt) {
     const now = performance.now();
     const frozen = now < this._frozenUntil;
@@ -1499,73 +1680,7 @@ export class Stickman {
     }
 
     if (this.game?.level?.curvedGravity) {
-      const planet = this._currentPlanetRef;
-      if (planet) {
-        const dx = this.body.position.x - planet.cx;
-        const dy = this.body.position.y - planet.cy;
-        const r = Math.hypot(dx, dy) || 1;
-        const ux = dx / r, uy = dy / r;
-        const tx = -uy, ty = ux;            // CCW perpendicular
-        const vT = this.body.velocity.x * tx + this.body.velocity.y * ty;
-        const vR = this.body.velocity.x * ux + this.body.velocity.y * uy;
-        // Walk speed cap is below the orbital-velocity threshold (sqrt(g*r))
-        // so tangential motion can never out-run gravity and lift the
-        // capsule off the surface. For r=5 with g≈8: orbital v ≈ 6.3, so
-        // capping ground walk to 4 leaves a comfortable margin.
-        const speedMaxC = this.crouching ? 2.0 : (boosted ? 6 : (flying ? 7 : 4.0));
-        const accelC = this.grounded ? (boosted ? 65 : 45) : (flying ? 36 : 18);
-        const targetT = moveX * speedMaxC;
-        // Stick-to-ground: when grounded, kill any outward radial velocity so
-        // microbumps from collider edges don't accumulate into a launch. Lets
-        // gravity hold the capsule.
-        const vRGrounded = this.grounded ? Math.min(vR, 0) : vR;
-        const dvT = targetT - vT;
-        const stepT = clamp(dvT, -accelC * dt, accelC * dt);
-        const newVT = vT + stepT;
-        this.body.velocity.x = newVT * tx + vRGrounded * ux;
-        this.body.velocity.y = newVT * ty + vRGrounded * uy;
-        if (this.grounded && Math.abs(moveX) < 0.05) {
-          const k = Math.pow(0.001, dt);
-          this.body.velocity.x *= k;
-          this.body.velocity.y *= k;
-        }
-        if (Math.abs(newVT) > 0.2) this.facing = Math.sign(newVT) || this.facing;
-
-        // Jump — apply impulse along radial up (ux, uy). Mirrors the flat-gravity
-        // jump logic but oriented to the planet surface. `jumpPressed` is set
-        // by the input layer; coyote + air-jump rules are the same as flat.
-        const now = this.input;
-        const wantJump = now.jumpPressed && performance.now() >= (this._jumpInputCooldown || 0);
-        // jumpSpeed tuned for ~12 m/s² surface gravity (Outer Wilds inverse-linear
-        // model). Height = v²/(2g) = 64/24 ≈ 2.7m — about half a planet radius.
-        const jumpSpeed = 8;
-        if (wantJump) {
-          if (this.grounded || this.coyote > 0) {
-            if (this.charging) this._clearCombatState();
-            // Replace radial component with jumpSpeed outward; preserve tangential.
-            const newVR = jumpSpeed;
-            this.body.velocity.x = newVT * tx + newVR * ux;
-            this.body.velocity.y = newVT * ty + newVR * uy;
-            this.coyote = 0;
-            this._jumpLockUntil = performance.now() + 80;
-            this._jumpInputCooldown = performance.now() + 120;
-            audio.jump?.();
-            if (this === this.game?.localPlayer) vibrate(12);
-            this.grounded = false;
-          } else if (this.airJumpsLeft > 0) {
-            if (this.charging) this._clearCombatState();
-            this.airJumpsLeft--;
-            const newVR = jumpSpeed * 0.95;
-            this.body.velocity.x = newVT * tx + newVR * ux;
-            this.body.velocity.y = newVT * ty + newVR * uy;
-            this._jumpLockUntil = performance.now() + 80;
-            this._jumpInputCooldown = performance.now() + 120;
-            audio.jump?.();
-          }
-        }
-        return;
-      }
-      // No planet captured — leave gravity preStep to handle drift, no walk control.
+      this._movePlanetMagnetic(dt, moveX, boosted, flying);
       return;
     }
 
@@ -1887,7 +2002,7 @@ export class Stickman {
     let delta = targetAngle - cur;
     while (delta > Math.PI) delta -= Math.PI * 2;
     while (delta < -Math.PI) delta += Math.PI * 2;
-    const rate = 8;
+    const rate = window.__planet?.ROT_SLERP_RATE ?? 12;
     const step = clamp(delta, -rate * dt, rate * dt);
     this._visualAngle = cur + step;
   }
