@@ -29,6 +29,23 @@ const ANIM_DEFAULTS = {
   BOB_AMT: 0.13,          // hip bob amplitude (was 0.10)
   TAKEOFF_POP: 0.22,      // extra upward stretch pulse on jump takeoff
   IDLE_DRIFT: 0.4,        // idle phase drift scale; lower = calmer arms (was 1.0)
+  // Escapable grab tunables
+  GRAB_MASH_GAIN: 0.12,   // escape added per fresh input edge while grabbed
+  GRAB_ESCAPE_DECAY: 0.25,// escape/sec passive decay (must keep mashing)
+  GRAB_MAX_HOLD: 2.5,     // s before a grab auto-breaks
+  GRAB_BREAK_KB: 7,       // shove speed on a mash-break
+  GRAB_IMMUNE: 0.6,       // s of re-grab immunity for the escapee
+  GRAB_HIT_BREAK_KB: 6,   // grabber knockback magnitude that breaks the grab
+  // Strike animation tunables
+  STRIKE_REACH: 1.0,       // uniform scale on strike-pose limb offsets (1.0 = identity)
+  STRIKE_OVERSHOOT: 0.10,  // follow-through bump: hand cracks past target then settles
+  LIGHT_PHASE_W1: 0.30, LIGHT_PHASE_W2: 0.65,   // light windup/strike split (live-tunable)
+  HEAVY_PHASE_W1: 0.50, HEAVY_PHASE_W2: 0.72,   // heavy windup/strike split (live-tunable)
+  // Walk feel tunables
+  WALK_HIP_SWAY: 0.06,    // side-to-side hip translation per speed unit (0 = off)
+  WALK_ARM_SWING: 1.0,    // arm counter-swing amplitude scale (1.0 = identity)
+  // Jump/land tunables
+  TAKEOFF_CROUCH: 0.10,   // hip-dip depth on jump takeoff (legs pre-compress before stretch)
 };
 const ANIM = (typeof window !== 'undefined')
   ? (window.__anim = Object.assign({}, ANIM_DEFAULTS, window.__anim || {}))
@@ -92,7 +109,13 @@ function solveIK(out, rootX, rootY, targetX, targetY, upperLen, lowerLen, bend =
 // windup/recover use eased smoothstep for gentle transitions.
 function phaseSplit(t, w1, w2) {
   if (t < w1) { const w = t / Math.max(0.0001, w1); return { p: 0, w, e: w * w * (3 - 2 * w) }; }
-  if (t < w2) { const w = (t - w1) / Math.max(0.0001, w2 - w1); return { p: 1, w, e: 1 - Math.pow(1 - w, 3) }; }
+  if (t < w2) {
+    const w = (t - w1) / Math.max(0.0001, w2 - w1);
+    const o = ANIM.STRIKE_OVERSHOOT ?? 0.10;
+    const eb = 1 - Math.pow(1 - w, 3);          // ease-out cubic base (0→1)
+    const over = Math.sin(w * Math.PI) * o;      // 0 at ends, peak mid → overshoot bump
+    return { p: 1, w, e: eb + over };
+  }
   const w = (t - w2) / Math.max(0.0001, 1 - w2);
   return { p: 2, w, e: w * w * (3 - 2 * w) };
 }
@@ -392,8 +415,45 @@ function poseFlyingKnee(rig, params) {
 }
 
 function poseAirHook(rig, params) {
-  const base = poseHook(rig, params);
-  return { ...base, leanZ: (base.leanZ ?? 0) + 0.10 };
+  // Airborne spinning hook — wider horizontal arc, body rotation tell,
+  // off-arm counter-sweep, legs tucked so it reads as airborne not grounded.
+  const t = clamp(params.attackProgress ?? 0, 0, 1);
+  const ph = phaseSplit(t, ...LITE);
+  let armRX, armRY, armLX, armLY, leanZ, legRX, legRY, legLX, legLY;
+  if (ph.p === 0) {
+    // Wind-up: arm cocks wide to the side, body pre-rotates, legs tuck
+    armRX = lerp(0.20, 0.60, ph.e);
+    armRY = lerp(-0.20, 0.45, ph.e);
+    armLX = lerp(-0.20, -0.45, ph.e);   // counter-arm sweeps back hard
+    armLY = lerp(-0.20, 0.25, ph.e);
+    leanZ = lerp(0, 0.28, ph.e);        // bigger body twist tell
+    legRX = lerp(0.15, 0.10, ph.e);    // both legs tuck up for air posture
+    legRY = lerp(-0.10, 0.20, ph.e);
+    legLX = lerp(-0.15, -0.12, ph.e);
+    legLY = lerp(-0.10, 0.15, ph.e);
+  } else if (ph.p === 1) {
+    // Strike: hook whips through wider arc, body rotates hard, off-arm whips back
+    armRX = lerp(0.60, 0.88, ph.e);
+    armRY = lerp(0.45, -0.05, ph.e);
+    armLX = lerp(-0.45, -0.10, ph.e);   // off-arm flicks the other way
+    armLY = lerp(0.25, -0.15, ph.e);
+    leanZ = lerp(0.28, 0.65, ph.e);     // full air-spin rotation tell
+    legRX = lerp(0.10, 0.15, ph.e);    // legs stay tucked during the hook
+    legRY = lerp(0.20, 0.30, ph.e);
+    legLX = lerp(-0.12, -0.08, ph.e);
+    legLY = lerp(0.15, 0.25, ph.e);
+  } else {
+    armRX = lerp(0.88, 0.20, ph.e);
+    armRY = lerp(-0.05, -0.20, ph.e);
+    armLX = lerp(-0.10, -0.20, ph.e);
+    armLY = lerp(-0.15, -0.20, ph.e);
+    leanZ = lerp(0.65, 0, ph.e);
+    legRX = lerp(0.15, 0.15, ph.e);
+    legRY = lerp(0.30, 0, ph.e);        // legs drop back to neutral
+    legLX = lerp(-0.08, -0.15, ph.e);
+    legLY = lerp(0.25, 0, ph.e);
+  }
+  return { armRX, armRY, armLX, armLY, leanZ, legRX, legRY, legLX, legLY };
 }
 
 function poseSomersault(rig, params) {
@@ -413,52 +473,87 @@ function poseSomersault(rig, params) {
 }
 
 function poseRisingKnee(rig, params) {
+  // Explosive aerial knee launcher — deep coil in windup, sharp uncurl on strike.
   const t = clamp(params.attackProgress ?? 0, 0, 1);
   const ph = phaseSplit(t, ...LAUN);
-  let legRX, legRY, leanZ;
+  let legRX, legRY, legLX, legLY, leanZ, armRX, armRY, armLX, armLY;
   if (ph.p === 0) {
-    legRX = lerp(0.20, 0.05, ph.e);
-    legRY = lerp(0, 0.30, ph.e);
-    leanZ = lerp(0, 0.25, ph.e);
+    // Deep coil: knee tucked in tight, body curls forward, arms raise for launch
+    legRX = lerp(0.20, 0.05, ph.e);    // strike leg folds back tight
+    legRY = lerp(0, 0.35, ph.e);       // knee pulls toward chest
+    legLX = lerp(-0.15, -0.10, ph.e); // plant leg tucks under
+    legLY = lerp(0, 0.20, ph.e);
+    leanZ = lerp(0, 0.35, ph.e);       // body curls (deeper than before)
+    armRX = lerp(0.10, -0.15, ph.e);  // arms coil back for counter-throw
+    armRY = lerp(0.10, 0.55, ph.e);
+    armLX = lerp(-0.10, -0.20, ph.e);
+    armLY = lerp(0.10, 0.50, ph.e);
   } else if (ph.p === 1) {
-    legRX = lerp(0.05, 0.10, ph.e);
-    legRY = lerp(0.30, 0.75, ph.e);     // knee high — air launcher
-    leanZ = lerp(0.25, -0.20, ph.e);    // body uncurls upward
+    // Sharp uncurl: knee drives explosively high, body snaps back, arms throw down
+    legRX = lerp(0.05, 0.20, ph.e);   // knee drives up and out
+    legRY = lerp(0.35, 0.80, ph.e);   // high knee — air launcher (was 0.75)
+    legLX = lerp(-0.10, -0.15, ph.e);
+    legLY = lerp(0.20, -0.10, ph.e);  // trailing leg kicks down for counter-weight
+    leanZ = lerp(0.35, -0.30, ph.e);  // body uncurls hard (snaps back)
+    armRX = lerp(-0.15, 0.20, ph.e); // arms throw DOWN as counter-balance
+    armRY = lerp(0.55, -0.35, ph.e);
+    armLX = lerp(-0.20, -0.15, ph.e);
+    armLY = lerp(0.50, -0.30, ph.e);
   } else {
-    legRX = lerp(0.10, 0.20, ph.e);
-    legRY = lerp(0.75, 0, ph.e);
-    leanZ = lerp(-0.20, 0, ph.e);
+    legRX = lerp(0.20, 0.20, ph.e);
+    legRY = lerp(0.80, 0, ph.e);
+    legLX = lerp(-0.15, -0.15, ph.e);
+    legLY = lerp(-0.10, 0, ph.e);
+    leanZ = lerp(-0.30, 0, ph.e);
+    armRX = lerp(0.20, 0.10, ph.e);
+    armRY = lerp(-0.35, 0.10, ph.e);
+    armLX = lerp(-0.15, -0.10, ph.e);
+    armLY = lerp(-0.30, 0.10, ph.e);
   }
-  return { legRX, legRY, leanZ, armRX: 0.05, armRY: 0.10, armLX: -0.05, armLY: 0.10 };
+  return { legRX, legRY, legLX, legLY, leanZ, armRX, armRY, armLX, armLY };
 }
 
 function poseDive(rig, params) {
+  // Committed downward spear — strong body-rotation tell, legs spear together,
+  // arms tuck in windup then thrust back on strike for streamlined dive silhouette.
   const t = clamp(params.attackProgress ?? 0, 0, 1);
   const ph = phaseSplit(t, 0.35, 0.78);
-  let legRX, legRY, legLX, legLY, leanZ;
+  let legRX, legRY, legLX, legLY, leanZ, armRX, armRY, armLX, armLY;
   if (ph.p === 0) {
-    legRX = lerp(0.20, 0.30, ph.e);
-    legRY = lerp(0, -0.10, ph.e);
-    legLX = lerp(-0.20, 0.25, ph.e);
-    legLY = lerp(0, -0.10, ph.e);
-    leanZ = lerp(0, 0.45, ph.e);
+    // Windup: body pitches forward, arms tuck in for the dive commit
+    legRX = lerp(0.20, 0.35, ph.e);    // legs draw together forward
+    legRY = lerp(0, 0.10, ph.e);       // slight knee-up before the spear
+    legLX = lerp(-0.20, 0.28, ph.e);   // left leg matches right
+    legLY = lerp(0, 0.10, ph.e);
+    leanZ = lerp(0, 0.70, ph.e);       // strong forward pitch (was 0.45)
+    armRX = lerp(0.10, -0.10, ph.e);   // arms tuck back and up toward body
+    armRY = lerp(0.10, 0.50, ph.e);
+    armLX = lerp(-0.10, -0.20, ph.e);
+    armLY = lerp(0.10, 0.50, ph.e);
   } else if (ph.p === 1) {
-    legRX = 0.30; legRY = -0.10;
-    legLX = 0.25; legLY = -0.10;
-    leanZ = 0.45;
+    // Strike: legs spear straight down-forward, arms thrust back for streamline
+    legRX = lerp(0.35, 0.30, ph.e);   // legs converge at spear point
+    legRY = lerp(0.10, -0.30, ph.e);  // drive downward
+    legLX = lerp(0.28, 0.25, ph.e);
+    legLY = lerp(0.10, -0.30, ph.e);
+    leanZ = lerp(0.70, 0.70, ph.e);   // hold the peak pitch through contact
+    armRX = lerp(-0.10, -0.25, ph.e); // arms fully swept back for dive shape
+    armRY = lerp(0.50, 0.30, ph.e);
+    armLX = lerp(-0.20, -0.35, ph.e);
+    armLY = lerp(0.50, 0.30, ph.e);
   } else {
+    // Recover: legs spread to catch, body straightens, arms come back out
     legRX = lerp(0.30, 0.20, ph.e);
-    legRY = lerp(-0.10, 0, ph.e);
+    legRY = lerp(-0.30, 0, ph.e);
     legLX = lerp(0.25, -0.20, ph.e);
-    legLY = lerp(-0.10, 0, ph.e);
-    leanZ = lerp(0.45, 0, ph.e);
+    legLY = lerp(-0.30, 0, ph.e);
+    leanZ = lerp(0.70, 0, ph.e);
+    armRX = lerp(-0.25, -0.15, ph.e);
+    armRY = lerp(0.30, 0.20, ph.e);
+    armLX = lerp(-0.35, -0.25, ph.e);
+    armLY = lerp(0.30, 0.20, ph.e);
   }
-  // Arms sweep back like a swimmer to maximize dive silhouette.
-  return {
-    legRX, legRY, legLX, legLY, leanZ,
-    armRX: -0.20, armRY: 0.25,
-    armLX: -0.30, armLY: 0.25,
-  };
+  return { legRX, legRY, legLX, legLY, leanZ, armRX, armRY, armLX, armLY };
 }
 
 function poseSlideKick(rig, params) {
@@ -602,6 +697,10 @@ export class StickmanRig {
     // Idle breathing phase — slow sine drives hip/torso/arm micro-motion
     // when standing still so the stance never feels frozen.
     this._breath = 0;
+    // Jump takeoff crouch — set on grounded→airborne for a brief pre-compress.
+    // Decays fast so it reads as a quick crouch→stretch, not a delayed jump.
+    this._takeoffCrouch = 0;
+
     // Throw windup arm rear-back amount, 0..1. Driven by Stickman via params.
     this._throwAnticipation = 0;
 
@@ -770,11 +869,17 @@ export class StickmanRig {
       // Takeoff — quick upward stretch pulse as the legs push off, so jumps
       // launch with snap instead of a constant pose.
       this._takeoffPop = (ANIM.TAKEOFF_POP ?? 0.22);
+      // Brief leg pre-compress: hip dips for ~2 frames then releases into the
+      // stretch. Starts positive (crouch), decays very fast. Does NOT add input
+      // latency — the impulse has already fired; this is cosmetic only.
+      this._takeoffCrouch = (ANIM.TAKEOFF_CROUCH ?? 0.10);
     }
     this._wasGrounded = params.grounded;
     this._landImpact = damp(this._landImpact, 0, 0.0001, dt); // fast decay
     if (this._takeoffPop === undefined) this._takeoffPop = 0;
     this._takeoffPop = damp(this._takeoffPop, 0, 0.0002, dt); // ~0.2s pop
+    if (this._takeoffCrouch === undefined) this._takeoffCrouch = 0;
+    this._takeoffCrouch = damp(this._takeoffCrouch, 0, 0.00008, dt); // fast ~2-frame decay
 
     // Idle breathing — slow sine when standing still so the stance breathes
     // rather than freezes. Phase advances regardless; amplitude gates on idle.
@@ -830,12 +935,21 @@ export class StickmanRig {
     const bob = (params.grounded ? Math.abs(Math.sin(this.walkPhase)) : 0) * speedMag * (ANIM.BOB_AMT ?? 0.10) * (1 + runBoost * 0.4);
     const crouchDrop = this.crouchAmount * 0.5;
     const landDrop = this._landImpact * 0.22;   // hip dips on touchdown (weight)
-    const hipX = pos.x;
+    // Takeoff crouch: brief hip-dip (~2 frames) before takeoff stretch.
+    // Reads as legs compressing before push-off. Decays very fast so it
+    // doesn't linger into the air or affect apex feel.
+    const takeoffCrouchDrop = (this._takeoffCrouch ?? 0) * 0.18;
+    // Hip sway: pelvis shifts toward the planted foot each step. Scales with
+    // speed so it's invisible at idle but clearly reads at walk/run. The sin()
+    // peak at phase=π/2 (foot planted) shifts hip toward stance side.
+    // Facing-signed so it mirrors correctly when facing left.
+    const hipSway = Math.sin(this.walkPhase) * speedMag * (ANIM.WALK_HIP_SWAY ?? 0.06) * this.facing;
+    const hipX = pos.x + (params.grounded ? hipSway : 0);
     // Hip-foot reach budget: feet sit at pos.y - 0.75 (capsule bottom).
     // Legs are 1.00m total. Hip at pos.y + 0.25 → diff 1.00m → legs read
     // essentially straight at idle (IK clamps to maxReach 0.99). Bob/crouch
     // /land drop hip from there to flex knees on impact and during stride.
-    const hipY = pos.y + 0.25 - bob - crouchDrop - landDrop + breathBob;
+    const hipY = pos.y + 0.25 - bob - crouchDrop - landDrop - takeoffCrouchDrop + breathBob;
     const hipZ = pos.z;
     this._hip.set(hipX, hipY, hipZ);
 
@@ -864,6 +978,15 @@ export class StickmanRig {
     // Clamp so torso never flies off
     this._torsoOffsetX = clamp(this._torsoOffsetX, -0.4, 0.4);
     this._torsoOffsetY = clamp(this._torsoOffsetY, -0.3, 0.3);
+
+    // Grab struggle — quick shake scaling with escape progress so a grabbed
+    // player visibly fights to get free.
+    const struggle = params.struggle ?? 0;
+    if (struggle > 0.01) {
+      const s = Math.sin(this.t * 40) * struggle * 0.18;
+      this.bodyTilt += s;
+      this._torsoOffsetX += Math.sin(this.t * 33) * struggle * 0.06;
+    }
 
     // Torso direction (with wobble offset on torso tip)
     const torsoUpX = Math.sin(this.bodyTilt);
@@ -1069,14 +1192,15 @@ export class StickmanRig {
     // Strike pose leg overrides (e.g. knee, flying-knee, dive, slide-kick).
     // These run AFTER kicking so pose-specific arcs take precedence.
     if (strikePose) {
+      const _sr = ANIM.STRIKE_REACH ?? 1;
       if (strikePose.legRX !== undefined) {
-        footRX = hipX + this.facing * strikePose.legRX;
-        footRY = baseFootY + strikePose.legRY;
+        footRX = hipX + this.facing * strikePose.legRX * _sr;
+        footRY = baseFootY + strikePose.legRY * _sr;
         this._plantRX = hipX + this.facing * 0.20;
       }
       if (strikePose.legLX !== undefined) {
-        footLX = hipX + this.facing * strikePose.legLX;
-        footLY = baseFootY + strikePose.legLY;
+        footLX = hipX + this.facing * strikePose.legLX * _sr;
+        footLY = baseFootY + strikePose.legLY * _sr;
         this._plantLX = footLX;
       }
       // Weight-shift footwork: drive plant foot forward during strike phase
@@ -1133,8 +1257,9 @@ export class StickmanRig {
     } else if (params.armPoseR === 'strikePosed') {
       // Pose offsets are absolute relative to shoulder. Lean is applied earlier
       // (snapped onto bodyTilt) so we don't repeat it here.
-      handRX = sRX + this.facing * strikePose.armRX;
-      handRY = sRY + strikePose.armRY;
+      const _sr = ANIM.STRIKE_REACH ?? 1;
+      handRX = sRX + this.facing * strikePose.armRX * _sr;
+      handRY = sRY + strikePose.armRY * _sr;
     } else if (params.armPoseR === 'attack') {
       // Three-phase swing: windup (rear back & up) → strike (whip through a
       // big arc, arm extends at peak) → follow-through (settle to neutral).
@@ -1210,7 +1335,8 @@ export class StickmanRig {
       // hang at standstill: at runBlend=0, hand drops directly below
       // shoulder with no forward push so idle reads as relaxed-at-sides
       // instead of stiff-braced-forward.
-      const armSw = Math.sin(phase + Math.PI) * stepAmp * swingDir;
+      const _armSwingR = (ANIM.WALK_ARM_SWING ?? 1.0);
+      const armSw = Math.sin(phase + Math.PI) * stepAmp * swingDir * _armSwingR;
       const fwdBoost = Math.max(0, armSw);
       const runBlend = clamp(stepAmp * 1.6, 0, 1);
       // Idle baseline at -0.88 (was -0.55): with arms 0.45+0.45 = 0.90m, a
@@ -1260,7 +1386,8 @@ export class StickmanRig {
       handLX = sLX + this.facing * 0.18;
       handLY = sLY - 0.25;
     } else {
-      const armSw = Math.sin(phase) * stepAmp * swingDir;
+      const _armSwingL = (ANIM.WALK_ARM_SWING ?? 1.0);
+      const armSw = Math.sin(phase) * stepAmp * swingDir * _armSwingL;
       const fwdBoost = Math.max(0, armSw);
       const runBlend = clamp(stepAmp * 1.6, 0, 1);
       // Idle baseline at -0.88 (was -0.55): with arms 0.45+0.45 = 0.90m, a
@@ -1278,8 +1405,29 @@ export class StickmanRig {
 
     // Apply strikePose left-arm override (e.g. two-handed moves like poseBlowAway / poseAxe).
     if (strikePose && strikePose.armLX !== undefined) {
-      handLX = sLX + this.facing * strikePose.armLX;
-      handLY = sLY + strikePose.armLY;
+      const _sr = ANIM.STRIKE_REACH ?? 1;
+      handLX = sLX + this.facing * strikePose.armLX * _sr;
+      handLY = sLY + strikePose.armLY * _sr;
+    }
+
+    // Land catch — on hard landings bias both arms downward/outward to brace,
+    // so a heavy touchdown reads with weight (hands drop instinctively).
+    // Only applies when grounded, not attacking or grabbed/holding, and only
+    // when impact is significant (> 0.4). Stays within arm amplitude budget.
+    if (params.grounded && this._landImpact > 0.4
+        && !strikePose
+        && params.armPoseR !== 'aim' && params.armPoseR !== 'attack'
+        && params.armPoseR !== 'strikePosed' && params.armPoseR !== 'grab'
+        && params.armPoseR !== 'hold') {
+      const catchWeight = clamp((this._landImpact - 0.4) / 0.6, 0, 1);
+      const catchScale  = Math.min(this._landImpact, 1.0);
+      // Pull both hands down and slightly outward — brace posture.
+      const catchDropY = catchWeight * catchScale * 0.38;
+      const catchOutX  = catchWeight * catchScale * 0.14 * this.facing;
+      handRX = handRX - catchOutX;
+      handRY = handRY - catchDropY;
+      handLX = handLX + catchOutX;
+      handLY = handLY - catchDropY;
     }
 
     // Slide arm drift — both arms trail behind body.
