@@ -36,6 +36,10 @@ cannon imports), e.g. the spawn-safety solver (`src/levels/spawnSolver.js`) and
 `src/util/math.js`. Gameplay still needs a manual browser pass — see the PR
 template checklist.
 
+The in-browser test harness (`window.__weaponTest`, `__test_*`) is **dev-only**:
+load the game with `?dev` (or set `localStorage.dev = '1'`) to pull it in.
+Production never ships it.
+
 ## Share with friends (no deploy)
 
 Three options that expose your local server to the internet via a free tunnel — anyone you send the link to can play with you over the public PeerJS broker:
