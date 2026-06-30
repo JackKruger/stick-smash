@@ -113,13 +113,17 @@ behind the smoke test:
 
 ---
 
-## Phase 6 — Strip dev harness from prod ⬜
+## Phase 6 — Strip dev harness from prod ✅
 
-`util/__weaponDebug.js` (~760 lines) and the `window.__*` hooks
-(`__weaponTest`, `__forceFeatures`, `__test`, `__anim`) ship in runtime paths.
-
-- ⬜ Gate them behind a `?dev=1` dynamic import so production never loads them
-  and `window.__forceFeatures` can't silently alter a real match.
+- ✅ `util/__weaponDebug.js` (~760 lines of `window.__weaponTest` / `__test_*`
+  helpers) now loads via a **dynamic import gated by `isDevMode()`**
+  (`?dev` query param or `localStorage.dev === '1'`). Production never ships it.
+  `src/util/devMode.js` is pure + unit-tested.
+- Note: `window.__anim` / `window.__planet` are deliberately kept — they're
+  production live-tuning hooks with safe defaults, not part of the harness.
+  `window.__forceFeatures` is set with full-on defaults in the `Game`
+  constructor independently of the harness, so gating the harness doesn't
+  change gameplay.
 
 ---
 
