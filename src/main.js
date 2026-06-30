@@ -1,8 +1,19 @@
 // Boot. Rapier WASM init must happen before Game is constructed.
 import { initRapier } from './physics/cannon-shim.js';
-import './util/__weaponDebug.js';
+import { isDevMode } from './util/devMode.js';
+
+// Dev test harness (~760 lines of window.__weaponTest helpers) loads ONLY in
+// dev mode (?dev, or localStorage dev=1), so production never ships it.
+function loadDevHarness() {
+  let stored = null;
+  try { stored = localStorage.getItem('dev'); } catch (_) { /* storage blocked */ }
+  if (isDevMode(location.search, stored)) {
+    import('./util/__weaponDebug.js').catch((e) => console.warn('[dev] harness failed to load', e));
+  }
+}
 
 async function boot() {
+  loadDevHarness();
   try {
     await initRapier();
   } catch (err) {

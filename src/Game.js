@@ -17,6 +17,11 @@ import { TutorialOverlay } from './ui/TutorialOverlay.js';
 import { Net } from './network/Net.js';
 import { rand, clamp, lerp } from './util/math.js';
 import { Projectile } from './weapons/Projectile.js';
+import * as spawnSolver from './levels/spawnSolver.js';
+import { killVerb } from './weapons/killVerbs.js';
+import { encodeSnapshot, decodePlayerInto, applyTiles, applyCurved } from './network/Snapshot.js';
+import { evaluateGameOver } from './match/outcome.js';
+import { Countdown } from './match/Countdown.js';
 
 export class Game {
   constructor(options = {}) {
@@ -460,27 +465,22 @@ export class Game {
   }
 
   _startCountdown() {
-    // Cancel any pending countdown from the previous match. Without this,
-    // a fast PLAY AGAIN (or map rotation) restarts before the prior 3-2-1
-    // setTimeouts have fired — both queues then dump their messages on the
-    // HUD, producing the "double countdown" bug.
-    if (this._countdownTimers) for (const id of this._countdownTimers) clearTimeout(id);
-    this._countdownTimers = [];
-
+    // Countdown owns the cancel-then-reschedule of the 3-2-1 timers (guards
+    // the "double countdown" bug on fast PLAY AGAIN / map rotation).
     const lockMs = 3 * 700 + 200;
     const until = performance.now() + lockMs;
     for (const p of this.players) if (p) p._frozenUntil = until;
     audio.countdown?.(); this.hud.showCenter('3', '', 700);
-    this._countdownTimers.push(setTimeout(() => { audio.countdown?.(); this.hud.showCenter('2', '', 700); }, 700));
-    this._countdownTimers.push(setTimeout(() => { audio.countdown?.(); this.hud.showCenter('1', '', 700); }, 1400));
-    this._countdownTimers.push(setTimeout(() => { audio.go?.(); this.hud.showCenter('FIGHT', 'last one standing wins', 1200); }, 2100));
+    this._countdown ??= new Countdown();
+    this._countdown.start([
+      { delay: 700,  fn: () => { audio.countdown?.(); this.hud.showCenter('2', '', 700); } },
+      { delay: 1400, fn: () => { audio.countdown?.(); this.hud.showCenter('1', '', 700); } },
+      { delay: 2100, fn: () => { audio.go?.(); this.hud.showCenter('FIGHT', 'last one standing wins', 1200); } },
+    ]);
   }
 
   _cleanup() {
-    if (this._countdownTimers) {
-      for (const id of this._countdownTimers) clearTimeout(id);
-      this._countdownTimers = [];
-    }
+    this._countdown?.cancel();
     if (this.level) { this.level.destroy(); this.level = null; }
     for (const p of this.players) if (p) p.destroy();
     for (const w of this.weapons) w.destroy?.();
@@ -534,149 +534,31 @@ export class Game {
     this.startLocal(data);
   }
 
-  // Pick spawn point farthest from existing live players AND clear of
-  // tile geometry. Prevents stacking and the "spawned inside the floor /
-  // wedged into a 1-cell gap" bug.
+  // Snapshot of the level bits the spawn solver needs. Kept as a getter so it
+  // always reflects live tile/hazard destruction.
+  _spawnWorld() {
+    if (!this.level) return null;
+    return { tiles: this.level.tiles, hazards: this.level.hazards, killBound: this.level.killBound };
+  }
+
+  // Pick spawn point farthest from existing live players AND clear of tile
+  // geometry. Prevents stacking and the "spawned inside the floor / wedged
+  // into a 1-cell gap" bug. See levels/spawnSolver.js for the math (unit-tested).
   _pickSpawn() {
-    const points = this.level?.spawnPoints || [{ x: 0, y: 5 }];
-    const live = this.players.filter(p => p?.alive);
-    // Score = minDist² to nearest live player + jitter; reject blocked points
-    // unless every candidate is blocked, in which case fall back to the
-    // best-scoring point with a vertical lift to escape any overlap.
-    const scored = points.map(sp => {
-      let minD = Infinity;
-      for (const p of live) {
-        const dx = sp.x - p.position.x, dy = sp.y - p.position.y;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < minD) minD = d2;
-      }
-      if (!live.length) minD = 100;
-      return { sp, score: minD + Math.random() * 0.5, clear: this._isSpawnClear(sp) };
-    });
-    scored.sort((a, b) => b.score - a.score);
-    for (const s of scored) {
-      if (s.clear) return s.sp;
-    }
-    // Fallback: every spawn was blocked (probably mid-match destruction
-    // landed on every spawn point). Lift the highest-scoring spawn above
-    // any obstruction and use it.
-    const best = scored[0].sp;
-    return this._liftSpawnClear(best);
+    const points = this.level?.spawnPoints;
+    const live = this.players.filter(p => p?.alive).map(p => ({ x: p.position.x, y: p.position.y }));
+    return spawnSolver.pickSpawn(this._spawnWorld(), points, live);
   }
 
-  // Returns true if the player capsule (BODY_HEIGHT 1.5, BODY_RADIUS 0.32)
-  // fits at this spawn without overlapping any integer-grid tile. Does not
-  // catch off-grid sphere/cylinder tiles or dynamic crates — acceptable
-  // because those rarely sit on a spawn cell.
-  _isSpawnClear(sp) {
-    if (!this.level) return true;
-    const radius = 0.32;
-    const halfH = 0.75;
-    // 1. Reject only if the capsule penetrates a tile by more than the
-    //    stand-on slop (0.3 units). The old check rejected ANY AABB
-    //    overlap, which falsely killed every spawn point that sits ON
-    //    top of a platform — those have a small intended overlap
-    //    between capsule bottom and tile top. Symptom was players
-    //    spawning nowhere on Gauntlet (every spawn directly above a
-    //    chain-suspended tile) until something nudged the world.
-    const tiles = this.level.tiles;
-    if (tiles) {
-      const x0 = Math.floor(sp.x - radius);
-      const x1 = Math.floor(sp.x + radius);
-      const y0 = Math.floor(sp.y - halfH - 0.1);
-      const y1 = Math.floor(sp.y + halfH + 0.1);
-      for (let gx = x0; gx <= x1; gx++) {
-        for (let gy = y0; gy <= y1; gy++) {
-          if (!tiles.has(`${gx},${gy}`)) continue;
-          const tileTop = gy + 0.5;
-          const tileBot = gy - 0.5;
-          const capBot = sp.y - halfH;
-          const capTop = sp.y + halfH;
-          if (capTop <= tileBot || capBot >= tileTop) continue; // no overlap
-          // capsule bottom more than 0.3 inside tile = real interpenetration
-          if (capBot < tileTop - 0.3) return false;
-        }
-      }
-    }
-    // 2. Reject if a static hazard's trigger volume overlaps the capsule.
-    // Skips kinetic hazards (saw, pendulum) since they move — those would
-    // give false rejections anywhere they pass through.
-    for (const h of this.level.hazards ?? []) {
-      if (h.kind !== 'lava' && h.kind !== 'spike') continue;
-      const hx = h.body?.position?.x ?? h.x;
-      const hy = h.body?.position?.y ?? h.y;
-      const hw = (h.w ?? 1) / 2 + radius;
-      const hh = (h.h ?? 0.4) / 2 + halfH;
-      if (Math.abs(sp.x - hx) < hw && Math.abs(sp.y - hy) < hh) return false;
-    }
-    // 3. Require solid ground within a reasonable drop. Spawns on top of
-    //    destroyed tile columns pass checks 1+2 (no overlap, no hazard)
-    //    but drop the player straight into the void on respawn.
-    if (!this._hasGroundBelow(sp.x, sp.y, 14)) return false;
-    return true;
-  }
+  _isSpawnClear(sp) { return spawnSolver.isSpawnClear(this._spawnWorld(), sp); }
 
-  // Walk down the tile grid from spawn y; return true if we hit a tile
-  // within `maxDrop` units. Scans the spawn column and ±1 since the capsule
-  // has width and may straddle a column boundary.
   _hasGroundBelow(x, y, maxDrop = 14) {
-    if (!this.level?.tiles) return true;
-    const startGy = Math.floor(y - 0.75); // bottom of capsule
-    for (let dx = -1; dx <= 1; dx++) {
-      const gx = Math.round(x) + dx;
-      for (let dy = 0; dy <= maxDrop; dy++) {
-        if (this.level.tiles.has(`${gx},${startGy - dy}`)) return true;
-      }
-    }
-    return false;
+    return spawnSolver.hasGroundBelow(this._spawnWorld(), x, y, maxDrop);
   }
 
-  // Pick an x for a sky drop that (a) stays within the map's playable
-  // x-range and (b) has solid ground below. Tries a few jittered candidates
-  // near `refX`; if none have ground (e.g., floor is gone), scans outward
-  // from refX for the nearest column that still does.
-  _safeDropX(refX) {
-    let minX = -Infinity, maxX = Infinity;
-    if (this.level?.killBound) {
-      minX = -this.level.killBound.x + 1;
-      maxX = this.level.killBound.x - 1;
-    } else if (this.level?.tiles) {
-      let lo = Infinity, hi = -Infinity;
-      for (const key of this.level.tiles.keys()) {
-        const gx = parseInt(key, 10);
-        if (gx < lo) lo = gx;
-        if (gx > hi) hi = gx;
-      }
-      if (isFinite(lo)) { minX = lo + 1; maxX = hi - 1; }
-    }
-    const clamp = (v) => Math.max(minX, Math.min(maxX, v));
-    for (let i = 0; i < 8; i++) {
-      const x = clamp(refX + rand(-8, 8));
-      if (this._hasGroundBelow(x, 16, 20)) return x;
-    }
-    // Scan outward from refX for first column that has ground.
-    const start = Math.round(clamp(refX));
-    const range = Math.ceil(Math.max(start - minX, maxX - start));
-    for (let d = 0; d <= range; d++) {
-      for (const dir of [-1, 1]) {
-        const x = start + d * dir;
-        if (x < minX || x > maxX) continue;
-        if (this._hasGroundBelow(x, 16, 20)) return x;
-      }
-    }
-    return clamp(refX);
-  }
+  _safeDropX(refX) { return spawnSolver.safeDropX(this._spawnWorld(), refX); }
 
-  _liftSpawnClear(sp) {
-    // Step the spawn upward in 0.5-unit increments until it's clear OR we
-    // exceed the play area. Worst-case fallback: original sp.
-    let cur = { x: sp.x, y: sp.y };
-    for (let i = 0; i < 20; i++) {
-      if (this._isSpawnClear(cur)) return cur;
-      cur = { x: cur.x, y: cur.y + 0.5 };
-    }
-    return sp;
-  }
+  _liftSpawnClear(sp) { return spawnSolver.liftSpawnClear(this._spawnWorld(), sp); }
 
   _spawnPlayer({ name, character, isLocal = false, isBot = false, isNet = false, inputSource = null }) {
     const sp = this._pickSpawn();
@@ -792,10 +674,17 @@ export class Game {
       }
       window.__perf = probe;
     } catch (err) {
-      if (this._lastTickErr !== String(err)) {
+      // Surface each DISTINCT tick error once (bounded ring buffer), instead
+      // of suppressing everything after the first. A recurring single error
+      // still logs once, but a second, different intermittent throw is no
+      // longer swallowed — which is what hid bugs during playtests.
+      const key = String(err?.stack || err);
+      this._tickErrs ??= [];
+      if (!this._tickErrs.includes(key)) {
         console.error('Tick error:', err);
-        this._lastTickErr = String(err);
         this._showError(err);
+        this._tickErrs.push(key);
+        if (this._tickErrs.length > 20) this._tickErrs.shift();
       }
     }
     this.input.endFrame();
@@ -1022,55 +911,27 @@ export class Game {
       }
     }
   }
-  _verb(w) {
-    return ({ sword: 'sliced', bat: 'launched', pistol: 'shot', shotgun: 'blasted', minigun: 'shredded', bow: 'pierced',
-              grenade: 'exploded', rpg: 'rocketed', chicken: 'chickened', boomerang: 'flung', fish: 'slapped',
-              fist: 'KO\'d', super: 'obliterated', gumgum: 'stretched', flame: 'burned', ice: 'froze',
-              lightning: 'shocked', nuke: 'NUKED', corpse: 'corpse-bashed', thrown: 'pelted',
-              saber: 'lightsabered', forcePush: 'force-pushed', forcePull: 'pulled', choke: 'choked',
-              longsword: 'cleaved', mace: 'maced', hammer: 'crushed', halberd: 'halberded',
-              explosion: 'blasted', lava: 'cooked', spike: 'spiked', saw: 'sawed', blade: 'guillotined', projectile: 'shot' })[w] || 'KO\'d';
-  }
+  _verb(w) { return killVerb(w); }
 
   _checkGameOver() {
-    if (!this.localPlayers || this.localPlayers.length === 0) return;
-    // A player is still "in the match" while they have lives remaining. Being
-    // mid-respawn (state===DEAD with lives>0) does NOT count them out — they'll
-    // be back. Only when lives==0 and state===DEAD are they truly eliminated.
-    const stillIn = this.players.filter(p => p && p.lives > 0);
-    const totalEverIn = this.players.filter(p => p).length;
+    // Decision (who won / draw / ko) lives in match/outcome.js (pure + tested);
+    // the audio/menu/net presentation stays here.
+    const outcome = evaluateGameOver(this.players, this.localPlayers, p => p.state === STATE.DEAD);
+    if (!outcome) return;
+    this.running = false;
+    if (this._notifyMatchOver(outcome)) return;
 
-    // Solo: keep the existing "you died" early exit so the over-screen fires
-    // the moment P1 runs out of lives.
-    if (this.localPlayers.length === 1) {
+    if (outcome.reason === 'ko') {
       const local = this.localPlayer;
-      if (local && local.lives <= 0 && local.state === STATE.DEAD) {
-        this.running = false;
-        if (this._notifyMatchOver({ winner: null, reason: 'ko' })) return;
-        audio.death();
-        this.net.broadcast?.({ t: 'gameover', text: 'KO!', sub: `${local.name} eliminated.` });
-        setTimeout(() => this.menu.show('over', 'KO!', `${local.name} eliminated.`), 1200);
-        return;
-      }
-    }
-
-    if (totalEverIn <= 1) return;
-
-    // All locals dead AND no one alive → simultaneous wipeout = draw.
-    if (stillIn.length === 0) {
-      this.running = false;
-      if (this._notifyMatchOver({ winner: null, reason: 'draw' })) return;
+      audio.death();
+      this.net.broadcast?.({ t: 'gameover', text: 'KO!', sub: `${local.name} eliminated.` });
+      setTimeout(() => this.menu.show('over', 'KO!', `${local.name} eliminated.`), 1200);
+    } else if (outcome.reason === 'draw') {
       audio.death();
       this.net.broadcast?.({ t: 'gameover', text: 'DRAW', sub: 'Everyone went down.' });
       setTimeout(() => this.menu.show('over', 'DRAW', 'Everyone went down.'), 1200);
-      return;
-    }
-
-    // Last fighter standing wins — anyone, not just P1.
-    if (stillIn.length === 1) {
-      const winner = stillIn[0];
-      this.running = false;
-      if (this._notifyMatchOver({ winner, reason: 'victory' })) return;
+    } else if (outcome.reason === 'victory') {
+      const winner = outcome.winner;
       const localWon = this.localPlayers.includes(winner);
       if (localWon) audio.win(); else audio.death();
       const sub = `${winner.name} wins!`;
@@ -1094,59 +955,13 @@ export class Game {
     return this.onMatchOver?.(result) === true;
   }
 
-  _snapshot() {
-    if (!this.level) return { players: [], tiles: [] };
-    const data = {
-      players: this.players.map(p => p ? {
-        id: p.id, name: p.name, character: p.character,
-        x: p.position.x, y: p.position.y,
-        vx: p.body.velocity.x, vy: p.body.velocity.y,
-        f: p.facing, ax: p.aimDir.x, ay: p.aimDir.y,
-        s: p.state, hp: p.health, l: p.lives, sc: p.score,
-        wp: p.weapon ? p.weapon.name : null,
-        at: p.attackTimer, gr: p.grabbing ? 1 : 0,
-        // Strike pose state — client needs these to render the right
-        // animation for net players. Pre-fix, only attackTimer was sent
-        // and net players fell back to the legacy single-arc attack.
-        mid: p.moveId || null,
-        cs: p.chainStep | 0,
-        acs: p.airChainStep | 0,
-        kk: p.kicking ? 1 : 0,
-        as: p._attackStep | 0,
-        gd: p.grounded ? 1 : 0,
-        sl: p.sliding ? 1 : 0,
-        cr: p.crouching ? 1 : 0,
-        bk: p._blocking ? 1 : 0, sdx: p._shieldDirX, sdy: p._shieldDirY,
-        sv: (p._severed?.has('armL') ? 1 : 0) | (p._severed?.has('armR') ? 2 : 0)
-          | (p._severed?.has('legL') ? 4 : 0) | (p._severed?.has('legR') ? 8 : 0),
-        gb: p._gibbed ? 1 : 0,
-      } : null),
-      // Only ship damaged tiles (hp < maxHp) instead of every tile.
-      // Cuts payload from ~hundreds of entries to whatever is broken.
-      // Clients only need to know the delta from the level's initial
-      // state for collision/render diffs.
-      tiles: [...this.level.tiles.values()]
-        .filter(t => t.hp < (t.maxHp ?? Infinity))
-        .map(t => [t.gx, t.gy, t.hp]),
-    };
-    // Curved-gravity levels also ship player rotation + wedge HP. Meteors
-    // are host-only render in v1 (clients don't simulate them yet).
-    if (this.level?.curvedGravity) {
-      data.playersQ = this.players.map(p => p
-        ? [p.body.quaternion.x, p.body.quaternion.y, p.body.quaternion.z, p.body.quaternion.w]
-        : null);
-      data.wedges = [];
-      for (const planet of (this.level.planets ?? [])) {
-        for (const w of planet.wedges) {
-          if (w && w.hp < w.maxHp && w.hp > 0) data.wedges.push([planet.id, w.kind, w.idx, w.hp]);
-        }
-      }
-    }
-    return data;
-  }
+  _snapshot() { return encodeSnapshot(this); }
 
   applySnapshot(snap) {
     // Client-side: set players' positions/states from authoritative snapshot.
+    // Per-player field application + tile/curved extras live in the codec
+    // (network/Snapshot.js); this method owns entity construction + local-
+    // player binding, which need the physics world and net layer.
     if (!this.level) return;
     for (let i = 0; i < snap.players.length; i++) {
       const sp = snap.players[i];
@@ -1172,43 +987,7 @@ export class Game {
           this.localPlayers = [p];
         }
       }
-      // First snapshot for this player: snap to position. Subsequent: interpolate.
-      if (!p._firstSnapApplied) {
-        p.body.position.set(sp.x, sp.y, 0);
-        p._firstSnapApplied = true;
-      }
-      p._netTargetX = sp.x;
-      p._netTargetY = sp.y;
-      p.body.velocity.set(sp.vx, sp.vy, 0);
-      p.facing = sp.f;
-      p.aimDir.set(sp.ax, sp.ay);
-      p.state = sp.s;
-      p.health = sp.hp;
-      p.lives = sp.l;
-      p.score = sp.sc;
-      p.attackTimer = sp.at;
-      // Drive net-player rig from authoritative state. Strike-pose
-      // dispatcher reads moveId; legacy paths read kicking + _attackStep.
-      p.moveId = sp.mid ?? null;
-      p.chainStep = sp.cs | 0;
-      p.airChainStep = sp.acs | 0;
-      p.kicking = !!sp.kk;
-      p._attackStep = sp.as | 0;
-      p.sliding = !!sp.sl;
-      p.crouching = !!sp.cr;
-      p.grounded = sp.gd != null ? !!sp.gd : Math.abs(sp.vy) < 0.5;
-      p._blocking = !!sp.bk;
-      if (sp.sdx != null) { p._shieldDirX = sp.sdx; p._shieldDirY = sp.sdy; }
-      // Dismemberment sync: hide severed limbs / gib / reset on respawn.
-      const sv = sp.sv | 0;
-      if (sv === 0 && (p._severed?.size || p._gibbed)) {
-        p._severed?.clear(); p._gibbed = false; p.rig.resetParts?.();
-      } else if (sv) {
-        for (const [name, bit] of [['armL', 1], ['armR', 2], ['legL', 4], ['legR', 8]]) {
-          if ((sv & bit) && !p._severed.has(name)) { p._severed.add(name); p.rig.hidePart?.(name); }
-        }
-      }
-      if (sp.gb && !p._gibbed) p._gib?.();
+      decodePlayerInto(p, sp);
     }
     // BUG 2: destroy ghost players when host roster shrinks.
     for (let i = snap.players.length; i < this.players.length; i++) {
@@ -1218,30 +997,8 @@ export class Game {
         this.players[i] = null;
       }
     }
-    // Tile HP updates -> destroy locally
-    for (const [gx, gy, hp] of snap.tiles ?? []) {
-      const t = this.level.tiles.get(`${gx},${gy}`);
-      if (t && hp <= 0) t.destroy();
-      else if (t) t.hp = hp;
-    }
-    // Curved-gravity: apply player quaternion + wedge HP (sent only by host
-    // when level.curvedGravity is true).
-    if (snap.playersQ) {
-      for (let i = 0; i < snap.playersQ.length; i++) {
-        const q = snap.playersQ[i];
-        const p = this.players[i];
-        if (!p || !q) continue;
-        p.body.quaternion.set(q[0], q[1], q[2], q[3]);
-      }
-    }
-    if (snap.wedges && this.level?.planets) {
-      for (const [planetId, kind, idx, hp] of snap.wedges ?? []) {
-        const planet = this.level.planets.find(pp => pp.id === planetId);
-        if (!planet) continue;
-        const w = planet.wedges.find(ww => ww && ww.kind === kind && ww.idx === idx);
-        if (w && hp < w.hp) w.damage(w.hp - hp);
-      }
-    }
+    applyTiles(this.level, snap.tiles);
+    applyCurved(this.level, this.players, snap);
   }
 
   handleNetEvent(ev) {
