@@ -54,19 +54,21 @@ Move dependency-free math out of god-objects into tested modules.
 
 ---
 
-## Phase 3 — Snapshot codec (netcode) ⬜
+## Phase 3 — Snapshot codec (netcode) ✅
 
-**Highest-value remaining refactor; also the highest-risk — touches live
-netcode, so it must land with the smoke test green in CI.**
+**Highest-value remaining refactor; also the highest-risk — touched live
+netcode, so it landed behind the CI smoke test.**
 
-- ⬜ Extract `Game._snapshot()` / `Game.applySnapshot()` into
-  `src/network/Snapshot.js` with paired `encode`/`decode` driven by a single
-  field schema, so the encoder and decoder **cannot drift** (today they're 150
-  lines apart and adding a field to one half silently desyncs net play).
-- ⬜ Add a **round-trip test**: `decode(encode(state))` preserves the symmetric
-  fields. Catches the drift bug class permanently.
-- ⬜ Verify in CI via the smoke test (browser-side), since the decode path
-  constructs entities and can't run under the node stubs.
+- ✅ Extracted `Game._snapshot()` / `Game.applySnapshot()` into
+  `src/network/Snapshot.js`: `encodePlayer`/`decodePlayerInto`,
+  `encodeSnapshot`, `applyTiles`, `applyCurved`. Encoder and decoder now sit
+  side by side in one dependency-free module; entity construction + local-
+  player binding stay in `Game.applySnapshot`.
+- ✅ **Round-trip test** (`test/network/snapshot.test.js`): asserts the exact
+  wire-key set (drift guard) and that `decode(encode(p))` preserves every
+  symmetric field, plus severed/gib/grounded-fallback/shield-dir edge cases.
+- ✅ Behavior-preserving — verified in CI via the smoke test (the decode path
+  constructs entities, so the browser run is the integration check).
 
 ---
 
@@ -80,6 +82,9 @@ Public room = anyone can join. Incoming peer data is currently trusted.
 - ⬜ Replace the dedupe-by-message-string error suppression in `Game._tick`
   with a ring buffer of distinct errors, so intermittent throws surface in
   playtests instead of being swallowed.
+- ⬜ **Gib churn**: a steady `{sv:0, gb:1}` snapshot stream resets-then-re-gibs
+  the player every frame (documented in `test/network/snapshot.test.js`).
+  Decide the intended behavior and make decode idempotent.
 
 ---
 

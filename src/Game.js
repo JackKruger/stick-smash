@@ -19,6 +19,7 @@ import { rand, clamp, lerp } from './util/math.js';
 import { Projectile } from './weapons/Projectile.js';
 import * as spawnSolver from './levels/spawnSolver.js';
 import { killVerb } from './weapons/killVerbs.js';
+import { encodeSnapshot, decodePlayerInto, applyTiles, applyCurved } from './network/Snapshot.js';
 
 export class Game {
   constructor(options = {}) {
@@ -970,59 +971,13 @@ export class Game {
     return this.onMatchOver?.(result) === true;
   }
 
-  _snapshot() {
-    if (!this.level) return { players: [], tiles: [] };
-    const data = {
-      players: this.players.map(p => p ? {
-        id: p.id, name: p.name, character: p.character,
-        x: p.position.x, y: p.position.y,
-        vx: p.body.velocity.x, vy: p.body.velocity.y,
-        f: p.facing, ax: p.aimDir.x, ay: p.aimDir.y,
-        s: p.state, hp: p.health, l: p.lives, sc: p.score,
-        wp: p.weapon ? p.weapon.name : null,
-        at: p.attackTimer, gr: p.grabbing ? 1 : 0,
-        // Strike pose state — client needs these to render the right
-        // animation for net players. Pre-fix, only attackTimer was sent
-        // and net players fell back to the legacy single-arc attack.
-        mid: p.moveId || null,
-        cs: p.chainStep | 0,
-        acs: p.airChainStep | 0,
-        kk: p.kicking ? 1 : 0,
-        as: p._attackStep | 0,
-        gd: p.grounded ? 1 : 0,
-        sl: p.sliding ? 1 : 0,
-        cr: p.crouching ? 1 : 0,
-        bk: p._blocking ? 1 : 0, sdx: p._shieldDirX, sdy: p._shieldDirY,
-        sv: (p._severed?.has('armL') ? 1 : 0) | (p._severed?.has('armR') ? 2 : 0)
-          | (p._severed?.has('legL') ? 4 : 0) | (p._severed?.has('legR') ? 8 : 0),
-        gb: p._gibbed ? 1 : 0,
-      } : null),
-      // Only ship damaged tiles (hp < maxHp) instead of every tile.
-      // Cuts payload from ~hundreds of entries to whatever is broken.
-      // Clients only need to know the delta from the level's initial
-      // state for collision/render diffs.
-      tiles: [...this.level.tiles.values()]
-        .filter(t => t.hp < (t.maxHp ?? Infinity))
-        .map(t => [t.gx, t.gy, t.hp]),
-    };
-    // Curved-gravity levels also ship player rotation + wedge HP. Meteors
-    // are host-only render in v1 (clients don't simulate them yet).
-    if (this.level?.curvedGravity) {
-      data.playersQ = this.players.map(p => p
-        ? [p.body.quaternion.x, p.body.quaternion.y, p.body.quaternion.z, p.body.quaternion.w]
-        : null);
-      data.wedges = [];
-      for (const planet of (this.level.planets ?? [])) {
-        for (const w of planet.wedges) {
-          if (w && w.hp < w.maxHp && w.hp > 0) data.wedges.push([planet.id, w.kind, w.idx, w.hp]);
-        }
-      }
-    }
-    return data;
-  }
+  _snapshot() { return encodeSnapshot(this); }
 
   applySnapshot(snap) {
     // Client-side: set players' positions/states from authoritative snapshot.
+    // Per-player field application + tile/curved extras live in the codec
+    // (network/Snapshot.js); this method owns entity construction + local-
+    // player binding, which need the physics world and net layer.
     if (!this.level) return;
     for (let i = 0; i < snap.players.length; i++) {
       const sp = snap.players[i];
@@ -1048,43 +1003,7 @@ export class Game {
           this.localPlayers = [p];
         }
       }
-      // First snapshot for this player: snap to position. Subsequent: interpolate.
-      if (!p._firstSnapApplied) {
-        p.body.position.set(sp.x, sp.y, 0);
-        p._firstSnapApplied = true;
-      }
-      p._netTargetX = sp.x;
-      p._netTargetY = sp.y;
-      p.body.velocity.set(sp.vx, sp.vy, 0);
-      p.facing = sp.f;
-      p.aimDir.set(sp.ax, sp.ay);
-      p.state = sp.s;
-      p.health = sp.hp;
-      p.lives = sp.l;
-      p.score = sp.sc;
-      p.attackTimer = sp.at;
-      // Drive net-player rig from authoritative state. Strike-pose
-      // dispatcher reads moveId; legacy paths read kicking + _attackStep.
-      p.moveId = sp.mid ?? null;
-      p.chainStep = sp.cs | 0;
-      p.airChainStep = sp.acs | 0;
-      p.kicking = !!sp.kk;
-      p._attackStep = sp.as | 0;
-      p.sliding = !!sp.sl;
-      p.crouching = !!sp.cr;
-      p.grounded = sp.gd != null ? !!sp.gd : Math.abs(sp.vy) < 0.5;
-      p._blocking = !!sp.bk;
-      if (sp.sdx != null) { p._shieldDirX = sp.sdx; p._shieldDirY = sp.sdy; }
-      // Dismemberment sync: hide severed limbs / gib / reset on respawn.
-      const sv = sp.sv | 0;
-      if (sv === 0 && (p._severed?.size || p._gibbed)) {
-        p._severed?.clear(); p._gibbed = false; p.rig.resetParts?.();
-      } else if (sv) {
-        for (const [name, bit] of [['armL', 1], ['armR', 2], ['legL', 4], ['legR', 8]]) {
-          if ((sv & bit) && !p._severed.has(name)) { p._severed.add(name); p.rig.hidePart?.(name); }
-        }
-      }
-      if (sp.gb && !p._gibbed) p._gib?.();
+      decodePlayerInto(p, sp);
     }
     // BUG 2: destroy ghost players when host roster shrinks.
     for (let i = snap.players.length; i < this.players.length; i++) {
@@ -1094,30 +1013,8 @@ export class Game {
         this.players[i] = null;
       }
     }
-    // Tile HP updates -> destroy locally
-    for (const [gx, gy, hp] of snap.tiles ?? []) {
-      const t = this.level.tiles.get(`${gx},${gy}`);
-      if (t && hp <= 0) t.destroy();
-      else if (t) t.hp = hp;
-    }
-    // Curved-gravity: apply player quaternion + wedge HP (sent only by host
-    // when level.curvedGravity is true).
-    if (snap.playersQ) {
-      for (let i = 0; i < snap.playersQ.length; i++) {
-        const q = snap.playersQ[i];
-        const p = this.players[i];
-        if (!p || !q) continue;
-        p.body.quaternion.set(q[0], q[1], q[2], q[3]);
-      }
-    }
-    if (snap.wedges && this.level?.planets) {
-      for (const [planetId, kind, idx, hp] of snap.wedges ?? []) {
-        const planet = this.level.planets.find(pp => pp.id === planetId);
-        if (!planet) continue;
-        const w = planet.wedges.find(ww => ww && ww.kind === kind && ww.idx === idx);
-        if (w && hp < w.hp) w.damage(w.hp - hp);
-      }
-    }
+    applyTiles(this.level, snap.tiles);
+    applyCurved(this.level, this.players, snap);
   }
 
   handleNetEvent(ev) {
