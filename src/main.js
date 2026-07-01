@@ -24,6 +24,7 @@ async function boot() {
   window.game = new Game();
 
   document.getElementById('game').addEventListener('contextmenu', (e) => e.preventDefault());
+  bootPlaytest(window.game);
 
   function checkOrientation() {
     if (window.innerHeight > window.innerWidth && matchMedia('(pointer: coarse)').matches) {
@@ -35,6 +36,31 @@ async function boot() {
   addEventListener('resize', checkOrientation);
   addEventListener('orientationchange', checkOrientation);
   checkOrientation();
+}
+
+function bootPlaytest(game) {
+  const params = new URLSearchParams(location.search);
+  if (!params.has('playtestLevel')) return;
+  let levelDef = null;
+  try {
+    const raw = localStorage.getItem('sticksmash.editor.playtestLevel');
+    levelDef = raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    console.warn('[editor] failed to load playtest level', err);
+  }
+  if (!levelDef) {
+    document.getElementById('loading').textContent = 'No editor playtest level found.';
+    return;
+  }
+  requestAnimationFrame(() => {
+    game.startLocal({
+      character: 'bolt',
+      name: 'Editor',
+      bots: 2,
+      levelId: levelDef.id || 'editor-level',
+      levelDef,
+    });
+  });
 }
 
 boot();
