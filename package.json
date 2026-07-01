@@ -7,6 +7,7 @@
   "scripts": {
     "test": "node --test test/*.test.js test/integrity/*.test.js test/network/*.test.js test/match/*.test.js",
     "test:smoke": "node test/smoke/boot.smoke.mjs",
+    "test:browser": "playwright test",
     "check": "node scripts/check.mjs",
     "start": "node scripts/start.mjs",
     "dev": "npx --yes serve@latest -p 5173 .",
@@ -18,5 +19,8 @@
   },
   "dependencies": {
     "selfsigned": "^2.4.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
   }
 }

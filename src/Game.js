@@ -248,11 +248,12 @@ export class Game {
   }
 
   // === Match start variants ===
-  startLocal({ character, name, bots, levelId, localMP = false, extras = null }) {
+  startLocal({ character, name, bots, levelId, levelDef = null, localMP = false, extras = null }) {
     try {
       this._lastLocalMP = !!localMP;
       this._lastExtras = extras ? extras.map(e => ({ ...e })) : null;
-      this._startMatch({ character, name, bots, levelId, isOnline: false, localMP: !!localMP, extras });
+      this._lastLevelDef = levelDef || null;
+      this._startMatch({ character, name, bots, levelId, levelDef, isOnline: false, localMP: !!localMP, extras });
       this.running = true;
     } catch (err) {
       console.error('startLocal failed:', err);
@@ -299,7 +300,7 @@ export class Game {
     this.running = true;
   }
 
-  _startMatch({ character, name, bots, levelId, isOnline, asClient, localPlayerId, localMP = false, extras = null, externalPlayers = null, externalOptions = null }) {
+  _startMatch({ character, name, bots, levelId, levelDef = null, isOnline, asClient, localPlayerId, localMP = false, extras = null, externalPlayers = null, externalOptions = null }) {
     this._cleanup();
     this.lobbyActive = false;   // any match start exits the lobby state
     // Clear any leftover pause from a previous match's pause-menu quit —
@@ -308,8 +309,9 @@ export class Game {
     this.paused = false;
     this.menu.hide?.();
     this._matchOverReported = false;
-    this.levelId = levelId;
-    this.level = new Level(this.scene, this.physics, this.fx, getLevel(levelId), this);
+    const resolvedLevel = levelDef || getLevel(levelId);
+    this.levelId = resolvedLevel?.id || levelId;
+    this.level = new Level(this.scene, this.physics, this.fx, resolvedLevel, this);
     this.camera._level = this.level;
 
     this.players = [];
@@ -515,8 +517,9 @@ export class Game {
     this.net?.disconnect();
     if (!this.localPlayer) return this.menu.show('main');
     // Round-end map rotation: pick a different level for variety.
-    const otherIds = LEVELS.map(l => l.id).filter(id => id !== this.levelId);
-    const nextId = otherIds.length ? otherIds[Math.floor(Math.random() * otherIds.length)] : this.levelId;
+    const customLevelDef = this._lastLevelDef || null;
+    const otherIds = customLevelDef ? [] : LEVELS.map(l => l.id).filter(id => id !== this.levelId);
+    const nextId = customLevelDef ? this.levelId : (otherIds.length ? otherIds[Math.floor(Math.random() * otherIds.length)] : this.levelId);
     // Snapshot the local roster before _cleanup nukes it. P1's character is
     // restored verbatim; P2–P4 will be re-randomized from the live pad list
     // inside _startMatch (so disconnected pads' slots simply drop out).
@@ -527,6 +530,7 @@ export class Game {
       name: heroName,
       bots: this.players.filter(p => p?.isBot).length || 3,
       levelId: nextId,
+      levelDef: customLevelDef,
       localMP: !!this._lastLocalMP,
       extras: this._lastExtras,
     };

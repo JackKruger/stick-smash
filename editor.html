@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#11131a" />
+<title>Stick Smash Level Editor</title>
+<link rel="stylesheet" href="src/editor/styles.css" />
+</head>
+<body>
+<main class="editor-app">
+  <canvas id="editor-canvas"></canvas>
+  <header id="editor-toolbar" class="editor-toolbar"></header>
+  <aside id="editor-sidebar" class="editor-sidebar"></aside>
+  <footer id="editor-status" class="editor-status"></footer>
+</main>
+<div id="editor-modal" class="editor-modal" aria-hidden="true">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h2 id="modal-title"></h2>
+      <button class="icon-btn" data-command="modal-close" title="Close" aria-label="Close">×</button>
+    </div>
+    <textarea id="modal-text" spellcheck="false"></textarea>
+    <div class="modal-actions">
+      <button class="text-btn" data-command="modal-copy">Copy</button>
+      <button class="text-btn" data-command="modal-import" hidden>Import</button>
+    </div>
+  </div>
+</div>
+<script type="module" src="src/editor/main.js"></script>
+</body>
+</html>
